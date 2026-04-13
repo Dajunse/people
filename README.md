@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# People Workspace
 
-## Getting Started
+Sistema interno para coordinar tareas entre colaboradores con dos vistas:
 
-First, run the development server:
+- `Admin`: crea colaboradores y asigna tareas.
+- `Dashboard compartido`: todos ven el avance del equipo y cada responsable actualiza su tarea.
+
+## Flujo de tareas
+
+Cada tarea pasa por estos estados:
+
+1. `Pendiente`
+2. `En progreso` (boton: **Comenzar**)
+3. `Casi lista` (boton: **Creo tenerla lista**)
+4. `Completada` (boton: **Finalizar**)
+
+El dashboard tambien muestra historial de completadas por colaborador.
+
+## Stack
+
+- Next.js 16
+- TypeScript
+- Tailwind CSS
+- Prisma
+- SQLite (local dev)
+- Auth por sesion segura con cookie HttpOnly
+
+## Instalacion local
 
 ```bash
+npm install
+npx prisma migrate dev
+npm run prisma:seed
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Credenciales de prueba
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- Admin:
+  - `admin@people.local`
+  - `Admin12345!`
+- Colaborador:
+  - `alice@people.local`
+  - `Colab12345!`
+- Colaborador:
+  - `diego@people.local`
+  - `Colab12345!`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Rutas principales
 
-## Learn More
+- `/login`
+- `/dashboard` (compartido)
+- `/admin` (solo admin)
 
-To learn more about Next.js, take a look at the following resources:
+## Scripts utiles
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `npm run dev`
+- `npm run lint`
+- `npm run build`
+- `npm run prisma:migrate`
+- `npm run prisma:seed`
