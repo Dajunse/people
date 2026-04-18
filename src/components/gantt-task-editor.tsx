@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Role, TaskStatus, type User } from "@prisma/client";
 import { updateTaskFromGanttAction } from "@/actions/gantt-actions";
+import { DeleteTaskButton } from "@/components/delete-task-button";
 import { taskClientLabel, taskStatusLabel } from "@/lib/labels";
 import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 import { SubmitButton } from "@/components/submit-button";
@@ -48,12 +49,15 @@ export function GanttTaskEditor({
             Ajusta cliente, responsable y fechas sin salir de la linea de tiempo.
           </p>
         </div>
-        <Link
-          href={`/public/gantt?zoom=${zoomKey}`}
-          className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
-        >
-          Cerrar editor
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {isAdmin ? <DeleteTaskButton taskId={task.id} /> : null}
+          <Link
+            href={`/public/gantt?zoom=${zoomKey}`}
+            className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
+          >
+            Cerrar editor
+          </Link>
+        </div>
       </div>
 
       <form action={updateTaskFromGanttAction} className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -174,6 +178,7 @@ export function GanttTaskEditor({
           />
         </div>
       </form>
+
     </section>
   );
 }

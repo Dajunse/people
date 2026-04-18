@@ -1,6 +1,7 @@
 "use server";
 
-import { Role, TaskClient, TaskStatus } from "@prisma/client";
+import bcrypt from "bcryptjs";
+import { Role, TaskClient, TaskDifficulty, TaskHistoryAction, TaskStatus } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
@@ -18,6 +19,59 @@ const updateTaskFromGanttSchema = z.object({
   dueDate: z.string().optional(),
   expectedDoneAt: z.string().optional(),
 });
+
+const shiftTaskScheduleSchema = z.object({
+  taskId: z.string().min(1),
+  startedAt: z.string().min(1),
+  dueDate: z.string().min(1),
+  assigneeId: z.string().min(1).optional(),
+});
+
+const createTaskFromGanttSchema = z.object({
+  title: z.string().min(2),
+  client: z.enum(TASK_CLIENT_VALUES),
+  assigneeId: z.string().min(1),
+});
+
+const createCollaboratorFromGanttSchema = z.object({
+  name: z.string().min(2),
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function isWeekend(date: Date) {
+  const day = date.getDay();
+  return day === 0 || day === 6;
+}
+
+function nextBusinessDay(date: Date) {
+  const next = startOfDay(date);
+  while (isWeekend(next)) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next;
+}
+
+function addBusinessDaysInclusive(date: Date, totalBusinessDays: number) {
+  const safeTotal = Math.max(totalBusinessDays, 1);
+  const next = nextBusinessDay(date);
+  let remaining = safeTotal - 1;
+
+  while (remaining > 0) {
+    next.setDate(next.getDate() + 1);
+    if (!isWeekend(next)) {
+      remaining -= 1;
+    }
+  }
+
+  return next;
+}
 
 export async function updateTaskFromGanttAction(formData: FormData) {
   const user = await requireUser();
@@ -109,4 +163,177 @@ export async function updateTaskFromGanttAction(formData: FormData) {
   revalidatePath("/public/gantt");
   revalidatePath("/admin/tasks");
   revalidatePath("/dashboard");
+}
+
+export async function shiftTaskScheduleAction(input: {
+  taskId: string;
+  startedAt: string;
+  dueDate: string;
+  assigneeId?: string;
+}) {
+  const user = await requireUser();
+
+  if (user.role !== Role.ADMIN) {
+    throw new Error("Solo admin puede reorganizar la linea del tiempo.");
+  }
+
+  const parsed = shiftTaskScheduleSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new Error("Payload invalido para mover la tarea.");
+  }
+
+  const task = await prisma.task.findUnique({
+    where: { id: parsed.data.taskId },
+    select: { id: true, assigneeId: true },
+  });
+
+  if (!task) {
+    throw new Error("Tarea no encontrada.");
+  }
+
+  const startedAt = new Date(parsed.data.startedAt);
+  const dueDate = new Date(parsed.data.dueDate);
+
+  if (Number.isNaN(startedAt.getTime()) || Number.isNaN(dueDate.getTime())) {
+    throw new Error("Fechas invalidas al mover la tarea.");
+  }
+
+  let nextAssigneeId = task.assigneeId;
+  if (parsed.data.assigneeId && parsed.data.assigneeId !== task.assigneeId) {
+    const assignee = await prisma.user.findFirst({
+      where: {
+        id: parsed.data.assigneeId,
+        role: Role.COLLABORATOR,
+        isActive: true,
+      },
+      select: { id: true },
+    });
+
+    if (!assignee) {
+      throw new Error("Colaborador asignado invalido.");
+    }
+    nextAssigneeId = assignee.id;
+  }
+
+  await prisma.task.update({
+    where: { id: task.id },
+    data: {
+      startedAt,
+      dueDate: dueDate.getTime() < startedAt.getTime() ? startedAt : dueDate,
+      assigneeId: nextAssigneeId,
+    },
+  });
+
+  revalidatePath("/public");
+  revalidatePath("/public/gantt");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/dashboard");
+}
+
+export async function createTaskFromGanttAction(input: {
+  title: string;
+  client: TaskClient;
+  assigneeId: string;
+}) {
+  const user = await requireUser();
+
+  if (user.role !== Role.ADMIN) {
+    throw new Error("Solo admin puede crear tareas desde el Gantt.");
+  }
+
+  const parsed = createTaskFromGanttSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new Error("Payload invalido para crear la tarea desde Gantt.");
+  }
+
+  const assignee = await prisma.user.findFirst({
+    where: {
+      id: parsed.data.assigneeId,
+      role: Role.COLLABORATOR,
+      isActive: true,
+    },
+    select: { id: true },
+  });
+
+  if (!assignee) {
+    throw new Error("Colaborador asignado invalido.");
+  }
+
+  const startedAt = nextBusinessDay(new Date());
+  const dueDate = addBusinessDaysInclusive(startedAt, 5);
+
+  const task = await prisma.task.create({
+    data: {
+      title: parsed.data.title,
+      client: parsed.data.client,
+      status: TaskStatus.PENDING,
+      difficulty: TaskDifficulty.MEDIUM,
+      starValue: 2,
+      assigneeId: assignee.id,
+      createdById: user.id,
+      startedAt,
+      dueDate,
+    },
+  });
+
+  await prisma.taskHistory.create({
+    data: {
+      taskId: task.id,
+      userId: user.id,
+      action: TaskHistoryAction.CREATED,
+      note: "Creada desde Gantt publico por arrastre.",
+    },
+  });
+
+  revalidatePath("/public");
+  revalidatePath("/public/gantt");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/dashboard");
+}
+
+export async function createCollaboratorFromGanttAction(input: {
+  name: string;
+  email: string;
+  password: string;
+}) {
+  const user = await requireUser();
+
+  if (user.role !== Role.ADMIN) {
+    throw new Error("Solo admin puede crear colaboradores desde el Gantt.");
+  }
+
+  const parsed = createCollaboratorFromGanttSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new Error("Payload invalido para crear colaborador desde Gantt.");
+  }
+
+  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+  await prisma.user.upsert({
+    where: { email: parsed.data.email.toLowerCase() },
+    update: {
+      name: parsed.data.name,
+      role: Role.COLLABORATOR,
+      isActive: true,
+      passwordHash,
+      dashboardTone: "OCEAN",
+      avatarPreset: "ROBOT",
+      startingRank: "IRON",
+    },
+    create: {
+      name: parsed.data.name,
+      email: parsed.data.email.toLowerCase(),
+      role: Role.COLLABORATOR,
+      isActive: true,
+      passwordHash,
+      dashboardTone: "OCEAN",
+      avatarPreset: "ROBOT",
+      startingRank: "IRON",
+    },
+  });
+
+  revalidatePath("/admin");
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/public");
+  revalidatePath("/public/gantt");
 }
