@@ -27,7 +27,7 @@ export async function loginAction(
     return { error: "Credenciales invalidas." };
   }
 
-  redirect("/dashboard");
+  redirect("/public/gantt");
 }
 
 export async function logoutAction() {
