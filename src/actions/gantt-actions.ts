@@ -308,7 +308,7 @@ export async function createCollaboratorFromGanttAction(input: {
   }
 
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
-  await prisma.user.upsert({
+  const collaborator = await prisma.user.upsert({
     where: { email: parsed.data.email.toLowerCase() },
     update: {
       name: parsed.data.name,
@@ -330,6 +330,19 @@ export async function createCollaboratorFromGanttAction(input: {
       startingRank: "IRON",
     },
   });
+
+  const existingClientAccess = await prisma.userClientAccess.count({
+    where: { userId: collaborator.id },
+  });
+  if (existingClientAccess === 0) {
+    await prisma.userClientAccess.createMany({
+      data: TASK_CLIENT_VALUES.map((client) => ({
+        userId: collaborator.id,
+        client,
+      })),
+      skipDuplicates: true,
+    });
+  }
 
   revalidatePath("/admin");
   revalidatePath("/admin/users");

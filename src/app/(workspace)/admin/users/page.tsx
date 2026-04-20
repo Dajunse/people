@@ -7,9 +7,11 @@ import { PageTitle } from "@/components/page-title";
 import { SubmitButton } from "@/components/submit-button";
 import { AVATAR_PRESET_OPTIONS } from "@/lib/avatar-presets";
 import { DASHBOARD_TONE_OPTIONS } from "@/lib/dashboard-tones";
+import { taskClientLabel } from "@/lib/labels";
 import { RANK_META, RANK_TIER_VALUES } from "@/lib/reward-system";
 import { requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 
 export default async function AdminUsersPage() {
   await requireAdmin();
@@ -24,6 +26,9 @@ export default async function AdminUsersPage() {
       dashboardTone: true,
       avatarPreset: true,
       startingRank: true,
+      visibleClients: {
+        select: { client: true },
+      },
     },
   });
   const personalizedRanks = collaborators.filter((collaborator) => collaborator.startingRank !== "IRON").length;
@@ -109,6 +114,17 @@ export default async function AdminUsersPage() {
             </select>
           </div>
           <div className="md:col-span-2">
+            <label className="mb-1 block text-sm text-zinc-700">Empresas visibles</label>
+            <div className="grid gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-2.5 sm:grid-cols-3">
+              {TASK_CLIENT_VALUES.map((client) => (
+                <label key={client} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-sm">
+                  <input type="checkbox" name="visibleClients" value={client} defaultChecked />
+                  <span>{taskClientLabel(client)}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="md:col-span-2">
             <SubmitButton
               idleLabel="Guardar colaborador"
               pendingLabel="Guardando colaborador..."
@@ -188,6 +204,22 @@ export default async function AdminUsersPage() {
                     pendingLabel="Guardando..."
                     className="w-full rounded-xl bg-black px-3 py-2 text-sm font-medium text-white md:w-auto disabled:cursor-not-allowed disabled:opacity-70"
                   />
+                </div>
+                <div className="md:col-span-5">
+                  <p className="mb-1 text-xs uppercase tracking-[0.12em] text-zinc-500">Empresas visibles</p>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    {TASK_CLIENT_VALUES.map((client) => (
+                      <label key={`${collaborator.id}-${client}`} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          name="visibleClients"
+                          value={client}
+                          defaultChecked={collaborator.visibleClients.some((item) => item.client === client)}
+                        />
+                        <span>{taskClientLabel(client)}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </form>
               <CollaboratorAppearanceForm

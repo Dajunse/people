@@ -18,6 +18,7 @@ const collaboratorSchema = z.object({
   dashboardTone: z.enum(DASHBOARD_TONE_VALUES),
   avatarPreset: z.enum(AVATAR_PRESET_VALUES),
   startingRank: z.enum(RANK_TIER_VALUES),
+  visibleClients: z.array(z.enum(TASK_CLIENT_VALUES)).optional(),
 });
 
 export async function createCollaboratorAction(formData: FormData) {
@@ -29,6 +30,7 @@ export async function createCollaboratorAction(formData: FormData) {
     dashboardTone: formData.get("dashboardTone"),
     avatarPreset: formData.get("avatarPreset"),
     startingRank: formData.get("startingRank"),
+    visibleClients: formData.getAll("visibleClients"),
   });
 
   if (!parsed.success) {
@@ -36,7 +38,7 @@ export async function createCollaboratorAction(formData: FormData) {
   }
 
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
-  await prisma.user.upsert({
+  const collaborator = await prisma.user.upsert({
     where: { email: parsed.data.email.toLowerCase() },
     update: {
       name: parsed.data.name,
@@ -57,6 +59,21 @@ export async function createCollaboratorAction(formData: FormData) {
       avatarPreset: parsed.data.avatarPreset,
       startingRank: parsed.data.startingRank,
     },
+  });
+
+  const allowedClients = parsed.data.visibleClients && parsed.data.visibleClients.length > 0
+    ? parsed.data.visibleClients
+    : [...TASK_CLIENT_VALUES];
+
+  await prisma.userClientAccess.deleteMany({
+    where: { userId: collaborator.id },
+  });
+  await prisma.userClientAccess.createMany({
+    data: allowedClients.map((client) => ({
+      userId: collaborator.id,
+      client,
+    })),
+    skipDuplicates: true,
   });
 
   revalidatePath("/admin");
@@ -180,6 +197,7 @@ const collaboratorProfileSchema = z.object({
   email: z.string().email(),
   password: z.string().optional(),
   startingRank: z.enum(RANK_TIER_VALUES),
+  visibleClients: z.array(z.enum(TASK_CLIENT_VALUES)).optional(),
 });
 
 export async function updateCollaboratorProfileAction(formData: FormData) {
@@ -191,6 +209,7 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
     email: formData.get("email"),
     password: formData.get("password") || undefined,
     startingRank: formData.get("startingRank"),
+    visibleClients: formData.getAll("visibleClients"),
   });
 
   if (!parsed.success) {
@@ -239,6 +258,20 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
 
   if (result.count === 0) {
     throw new Error("No se encontro el colaborador para editar.");
+  }
+
+  const allowedClients = parsed.data.visibleClients ?? [];
+  await prisma.userClientAccess.deleteMany({
+    where: { userId: parsed.data.collaboratorId },
+  });
+  if (allowedClients.length > 0) {
+    await prisma.userClientAccess.createMany({
+      data: allowedClients.map((client) => ({
+        userId: parsed.data.collaboratorId,
+        client,
+      })),
+      skipDuplicates: true,
+    });
   }
 
   revalidatePath("/admin");

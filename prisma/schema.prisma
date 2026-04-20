@@ -96,8 +96,18 @@ model User {
   updatedAt     DateTime      @updatedAt
   assignedTasks Task[]        @relation("TaskAssignee")
   createdTasks  Task[]        @relation("TaskCreator")
+  visibleClients UserClientAccess[]
   history       TaskHistory[]
   sessions      Session[]
+}
+
+model UserClientAccess {
+  userId String
+  client TaskClient
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, client])
+  @@index([client])
 }
 
 model Task {

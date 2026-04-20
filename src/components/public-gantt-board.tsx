@@ -9,7 +9,6 @@ import {
   shiftTaskScheduleAction,
 } from "@/actions/gantt-actions";
 import { taskClientLabel } from "@/lib/labels";
-import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 import {
   BAR_HEIGHT,
   LABEL_WIDTH,
@@ -59,42 +58,10 @@ type DragState = {
   start: Date;
   end: Date;
   dayDelta: number;
+  hasMoved: boolean;
   assigneeId: string;
   targetAssigneeId: string;
 };
-
-function DragHandle({
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-  onPointerCancel,
-  disabled,
-}: {
-  onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
-  onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
-  onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
-  onPointerCancel: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label="Mover tarea en la linea del tiempo"
-      className="absolute inset-y-1.5 right-1.5 z-20 flex w-7 touch-none items-center justify-center rounded-full border border-white/20 bg-black/15 text-white/85 opacity-0 transition group-hover:opacity-100 hover:bg-black/25 active:cursor-grabbing"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerCancel}
-      disabled={disabled}
-    >
-      <span className="grid gap-[2px]">
-        <span className="h-1 w-1 rounded-full bg-current" />
-        <span className="h-1 w-1 rounded-full bg-current" />
-        <span className="h-1 w-1 rounded-full bg-current" />
-      </span>
-    </button>
-  );
-}
 
 function parseTaskSchedule(task: GanttTask, override?: TaskOverride) {
   return getTaskSchedule({
@@ -115,6 +82,7 @@ function statusLabelFor(status: TaskStatus) {
 const NO_CLIENT_KEY = "__NO_CLIENT__";
 const COLLABORATOR_FILTERS_STORAGE_KEY = "people_gantt_filters_collaborators";
 const CLIENT_FILTERS_STORAGE_KEY = "people_gantt_filters_clients";
+const DRAG_ACTIVATION_PX = 4;
 
 export function PublicGanttBoard({
   collaborators,
@@ -130,6 +98,7 @@ export function PublicGanttBoard({
   initialCreateModalOpen,
   initialCreateCollaboratorModalOpen,
   initialFiltersModalOpen,
+  allowedClientValues,
 }: {
   collaborators: GanttCollaborator[];
   currentUserId?: string;
@@ -144,10 +113,16 @@ export function PublicGanttBoard({
   initialCreateModalOpen?: boolean;
   initialCreateCollaboratorModalOpen?: boolean;
   initialFiltersModalOpen?: boolean;
+  allowedClientValues: TaskClient[];
 }) {
   const router = useRouter();
+  const canPlan = currentUserRole === "ADMIN";
+  const canViewNoClientOption = canPlan;
   const collaboratorIds = collaborators.map((collaborator) => collaborator.id);
-  const validClientKeys = [...TASK_CLIENT_VALUES, NO_CLIENT_KEY];
+  const availableClientValues = allowedClientValues;
+  const validClientKeys = canViewNoClientOption
+    ? [...availableClientValues, NO_CLIENT_KEY]
+    : [...availableClientValues];
   const [overrides, setOverrides] = useState<Record<string, TaskOverride>>({});
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [hoverAssigneeId, setHoverAssigneeId] = useState<string | null>(null);
@@ -158,7 +133,7 @@ export function PublicGanttBoard({
   );
   const [isFiltersModalOpen, setIsFiltersModalOpen] = useState(Boolean(initialFiltersModalOpen));
   const [newTaskTitle, setNewTaskTitle] = useState("");
-  const [newTaskClient, setNewTaskClient] = useState<TaskClient>("SCIO");
+  const [newTaskClient, setNewTaskClient] = useState<TaskClient>(availableClientValues[0] ?? "SCIO");
   const [newTaskAssigneeId, setNewTaskAssigneeId] = useState(collaborators[0]?.id ?? "");
   const [newCollaboratorName, setNewCollaboratorName] = useState("");
   const [newCollaboratorEmail, setNewCollaboratorEmail] = useState("");
@@ -193,7 +168,6 @@ export function PublicGanttBoard({
   const today = startOfDay(new Date());
   const rangeStart = new Date(rangeStartIso);
   const rangeEnd = new Date(rangeEndIso);
-  const canPlan = currentUserRole === "ADMIN";
   const openTask = (taskId: string) => {
     if (dragChangedTaskRef.current === taskId) {
       dragChangedTaskRef.current = null;
@@ -318,7 +292,7 @@ export function PublicGanttBoard({
           assigneeId: newTaskAssigneeId,
         });
         setNewTaskTitle("");
-        setNewTaskClient("SCIO");
+        setNewTaskClient(availableClientValues[0] ?? "SCIO");
         closeCreateModal();
         setDragMessage({ type: "success", text: "Tarea creada correctamente." });
         router.refresh();
@@ -534,7 +508,7 @@ export function PublicGanttBoard({
                           </span>
                           {canPlan ? (
                             <span className="rounded-full border border-white/25 bg-black/10 px-2 py-0.5">
-                              {isDragging ? "Replaneando..." : "Usa el control lateral para mover"}
+                              {isDragging ? "Replaneando..." : "Arrastra la barra para mover"}
                             </span>
                           ) : null}
                         </div>
@@ -542,7 +516,7 @@ export function PublicGanttBoard({
                     </div>
                   );
 
-                  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+                  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
                     if (!canPlan) return;
 
                     event.preventDefault();
@@ -556,6 +530,7 @@ export function PublicGanttBoard({
                       start: schedule.start,
                       end: schedule.end,
                       dayDelta: 0,
+                      hasMoved: false,
                       assigneeId: collaborator.id,
                       targetAssigneeId: collaborator.id,
                     };
@@ -564,9 +539,15 @@ export function PublicGanttBoard({
                     event.currentTarget.setPointerCapture(event.pointerId);
                   };
 
-                  const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+                  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
                     const drag = dragRef.current;
                     if (!drag || drag.taskId !== task.id) return;
+
+                    const pixelDelta = event.clientX - drag.originX;
+                    if (!drag.hasMoved && Math.abs(pixelDelta) >= DRAG_ACTIVATION_PX) {
+                      drag.hasMoved = true;
+                      dragChangedTaskRef.current = task.id;
+                    }
 
                     const hoveredAssigneeId = resolveCollaboratorIdFromPoint(event.clientX, event.clientY);
                     if (hoveredAssigneeId && hoveredAssigneeId !== drag.targetAssigneeId) {
@@ -575,7 +556,7 @@ export function PublicGanttBoard({
                       dragChangedTaskRef.current = task.id;
                     }
 
-                    const nextDayDelta = Math.round((event.clientX - drag.originX) / dayWidth);
+                    const nextDayDelta = Math.round(pixelDelta / dayWidth);
                     if (nextDayDelta === drag.dayDelta) return;
 
                     drag.dayDelta = nextDayDelta;
@@ -591,7 +572,7 @@ export function PublicGanttBoard({
                     }));
                   };
 
-                  const handlePointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+                  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
                     const drag = dragRef.current;
                     if (!drag || drag.taskId !== task.id) return;
 
@@ -600,6 +581,12 @@ export function PublicGanttBoard({
                     setActiveDragId(null);
                     setHoverAssigneeId(null);
                     const assigneeChanged = drag.targetAssigneeId !== drag.assigneeId;
+                    const wasClick = !drag.hasMoved && !assigneeChanged;
+
+                    if (wasClick) {
+                      openTask(task.id);
+                      return;
+                    }
 
                     if (drag.dayDelta === 0 && !assigneeChanged) {
                       dragChangedTaskRef.current = null;
@@ -636,6 +623,22 @@ export function PublicGanttBoard({
                   };
 
                   if (isEditableTask) {
+                    if (canPlan) {
+                      return (
+                        <div
+                          key={task.id}
+                          className={`${sharedClassName} touch-none ${isPending && activeDragId === task.id ? "pointer-events-none opacity-80" : "cursor-grab active:cursor-grabbing"}`}
+                          style={sharedStyle}
+                          onPointerDown={handlePointerDown}
+                          onPointerMove={handlePointerMove}
+                          onPointerUp={handlePointerUp}
+                          onPointerCancel={handlePointerCancel}
+                        >
+                          {barContent}
+                        </div>
+                      );
+                    }
+
                     return (
                       <div key={task.id} className={sharedClassName} style={sharedStyle}>
                         <button
@@ -647,15 +650,6 @@ export function PublicGanttBoard({
                           <span className="sr-only">Abrir tarea</span>
                         </button>
                         {barContent}
-                        {canPlan ? (
-                          <DragHandle
-                            onPointerDown={handlePointerDown}
-                            onPointerMove={handlePointerMove}
-                            onPointerUp={handlePointerUp}
-                            onPointerCancel={handlePointerCancel}
-                            disabled={isPending && activeDragId === task.id}
-                          />
-                        ) : null}
                       </div>
                     );
                   }
@@ -721,12 +715,12 @@ export function PublicGanttBoard({
                     onChange={(event) => setNewTaskClient(event.target.value as TaskClient)}
                     className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
                   >
-                    {TASK_CLIENT_VALUES.map((client) => (
-                      <option key={client} value={client}>
-                        {taskClientLabel(client)}
-                      </option>
-                    ))}
-                  </select>
+                  {availableClientValues.map((client) => (
+                    <option key={client} value={client}>
+                      {taskClientLabel(client)}
+                    </option>
+                  ))}
+                </select>
                 </div>
                 <div>
                   <label className="mb-1 block text-sm text-slate-700">Asignar a</label>
@@ -943,7 +937,7 @@ export function PublicGanttBoard({
                   </div>
                 </div>
                 <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-                  {TASK_CLIENT_VALUES.map((client) => (
+                  {availableClientValues.map((client) => (
                     <label key={client} className="flex items-center gap-2 rounded-xl border border-slate-200 px-2.5 py-2 text-sm">
                       <input
                         type="checkbox"
@@ -953,14 +947,16 @@ export function PublicGanttBoard({
                       <span>{taskClientLabel(client)}</span>
                     </label>
                   ))}
-                  <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-2.5 py-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={activeClientFilter.includes(NO_CLIENT_KEY)}
-                      onChange={() => toggleClientFilter(NO_CLIENT_KEY)}
-                    />
-                    <span>Sin cliente</span>
-                  </label>
+                  {canViewNoClientOption ? (
+                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-2.5 py-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={activeClientFilter.includes(NO_CLIENT_KEY)}
+                        onChange={() => toggleClientFilter(NO_CLIENT_KEY)}
+                      />
+                      <span>Sin cliente</span>
+                    </label>
+                  ) : null}
                 </div>
               </div>
             </div>

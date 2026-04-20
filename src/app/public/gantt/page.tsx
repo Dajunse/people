@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { TaskStatus } from "@prisma/client";
+import { TaskClient, TaskStatus } from "@prisma/client";
 import { GanttTaskEditor } from "@/components/gantt-task-editor";
 import { PublicGanttBoard } from "@/components/public-gantt-board";
 import { getAvatarPreset } from "@/lib/avatar-presets";
@@ -19,6 +19,7 @@ import {
 } from "@/lib/gantt";
 import { cn } from "@/lib/utils";
 import { prisma } from "@/lib/prisma";
+import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +70,18 @@ export default async function PublicGanttPage({
   };
 
   const currentUser = await getCurrentUser();
+  const viewerAllowedClients = currentUser && currentUser.role !== "ADMIN"
+    ? await prisma.userClientAccess.findMany({
+        where: { userId: currentUser.id },
+        select: { client: true },
+      })
+    : [];
+  const allowedClientValues: TaskClient[] | null = currentUser && currentUser.role !== "ADMIN"
+    ? viewerAllowedClients.map((entry) => entry.client as TaskClient)
+    : null;
+  const taskClientWhere = allowedClientValues
+    ? { client: { in: allowedClientValues } }
+    : {};
 
   const [collaborators, selectedTask] = await Promise.all([
     prisma.user.findMany({
@@ -84,6 +97,7 @@ export default async function PublicGanttPage({
             status: {
               in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.ALMOST_DONE],
             },
+            ...taskClientWhere,
           },
           orderBy: [{ startedAt: "asc" }, { dueDate: "asc" }, { createdAt: "asc" }],
           select: {
@@ -124,6 +138,9 @@ export default async function PublicGanttPage({
         })
       : Promise.resolve(null),
   ]);
+  const selectedTaskAllowed = selectedTask
+    ? !allowedClientValues || (selectedTask.client ? allowedClientValues.includes(selectedTask.client) : false)
+    : false;
 
   const scheduledEntries = collaborators.flatMap((collaborator) =>
     collaborator.assignedTasks
@@ -188,7 +205,7 @@ export default async function PublicGanttPage({
         expectedDoneAt: task.expectedDoneAt?.toISOString() ?? null,
       })),
     };
-  });
+  }).filter((collaborator) => currentUser?.role === "ADMIN" || !allowedClientValues || collaborator.assignedTasks.length > 0);
 
   return (
     <main className="min-h-screen bg-[#f4f6f8] px-6 py-8 text-slate-900">
@@ -331,6 +348,7 @@ export default async function PublicGanttPage({
               initialCreateModalOpen={createTaskModal}
               initialCreateCollaboratorModalOpen={createCollaboratorModal}
               initialFiltersModalOpen={filtersModal}
+              allowedClientValues={allowedClientValues ?? [...TASK_CLIENT_VALUES]}
             />
 
             {collaborators.length === 0 ? (
@@ -342,7 +360,7 @@ export default async function PublicGanttPage({
         </section>
       </div>
 
-      {currentUser && selectedTask && (currentUser.role === "ADMIN" || selectedTask.assigneeId === currentUser.id) ? (
+      {currentUser && selectedTask && selectedTaskAllowed && (currentUser.role === "ADMIN" || selectedTask.assigneeId === currentUser.id) ? (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 px-4 py-8 backdrop-blur-[3px]">
           <Link
             href={`/public/gantt?zoom=${zoomKey}`}
