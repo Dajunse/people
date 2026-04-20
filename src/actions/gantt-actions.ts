@@ -373,7 +373,6 @@ export async function createCollaboratorFromGanttAction(input: {
         userId: collaborator.id,
         client,
       })),
-      skipDuplicates: true,
     });
   }
 

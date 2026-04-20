@@ -73,7 +73,6 @@ export async function createCollaboratorAction(formData: FormData) {
       userId: collaborator.id,
       client,
     })),
-    skipDuplicates: true,
   });
 
   revalidatePath("/admin");
@@ -270,7 +269,6 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
         userId: parsed.data.collaboratorId,
         client,
       })),
-      skipDuplicates: true,
     });
   }
 
