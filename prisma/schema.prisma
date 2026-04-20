@@ -9,6 +9,7 @@ datasource db {
 
 enum Role {
   ADMIN
+  MANAGER
   COLLABORATOR
 }
 
@@ -88,6 +89,7 @@ model User {
   email         String        @unique
   passwordHash  String
   role          Role          @default(COLLABORATOR)
+  primaryClient TaskClient?
   dashboardTone DashboardTone @default(OCEAN)
   avatarPreset  AvatarPreset  @default(ROBOT)
   startingRank  RankTier      @default(IRON)

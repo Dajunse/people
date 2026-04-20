@@ -11,10 +11,15 @@ import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 import { requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+const STAFF_ROLES: Role[] = [Role.COLLABORATOR, Role.MANAGER];
+const STAFF_ROLE_VALUES = ["COLLABORATOR", "MANAGER"] as const;
+
 const collaboratorSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   password: z.string().min(8),
+  role: z.enum(STAFF_ROLE_VALUES).default("COLLABORATOR"),
+  primaryClient: z.enum(TASK_CLIENT_VALUES),
   dashboardTone: z.enum(DASHBOARD_TONE_VALUES),
   avatarPreset: z.enum(AVATAR_PRESET_VALUES),
   startingRank: z.enum(RANK_TIER_VALUES),
@@ -27,6 +32,8 @@ export async function createCollaboratorAction(formData: FormData) {
     name: formData.get("name"),
     email: formData.get("email"),
     password: formData.get("password"),
+    role: formData.get("role") || "COLLABORATOR",
+    primaryClient: formData.get("primaryClient"),
     dashboardTone: formData.get("dashboardTone"),
     avatarPreset: formData.get("avatarPreset"),
     startingRank: formData.get("startingRank"),
@@ -42,7 +49,8 @@ export async function createCollaboratorAction(formData: FormData) {
     where: { email: parsed.data.email.toLowerCase() },
     update: {
       name: parsed.data.name,
-      role: Role.COLLABORATOR,
+      role: parsed.data.role as Role,
+      primaryClient: parsed.data.primaryClient as TaskClient,
       isActive: true,
       passwordHash,
       dashboardTone: parsed.data.dashboardTone,
@@ -52,7 +60,8 @@ export async function createCollaboratorAction(formData: FormData) {
     create: {
       name: parsed.data.name,
       email: parsed.data.email.toLowerCase(),
-      role: Role.COLLABORATOR,
+      role: parsed.data.role as Role,
+      primaryClient: parsed.data.primaryClient as TaskClient,
       isActive: true,
       passwordHash,
       dashboardTone: parsed.data.dashboardTone,
@@ -61,9 +70,10 @@ export async function createCollaboratorAction(formData: FormData) {
     },
   });
 
-  const allowedClients = parsed.data.visibleClients && parsed.data.visibleClients.length > 0
+  const selectedClients = parsed.data.visibleClients && parsed.data.visibleClients.length > 0
     ? parsed.data.visibleClients
     : [...TASK_CLIENT_VALUES];
+  const allowedClients = Array.from(new Set([parsed.data.primaryClient, ...selectedClients]));
 
   await prisma.userClientAccess.deleteMany({
     where: { userId: collaborator.id },
@@ -175,7 +185,7 @@ export async function updateCollaboratorAppearanceAction(formData: FormData) {
   await prisma.user.updateMany({
     where: {
       id: parsed.data.collaboratorId,
-      role: Role.COLLABORATOR,
+      role: { in: STAFF_ROLES },
       isActive: true,
     },
     data: {
@@ -195,6 +205,8 @@ const collaboratorProfileSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   password: z.string().optional(),
+  role: z.enum(STAFF_ROLE_VALUES).default("COLLABORATOR"),
+  primaryClient: z.enum(TASK_CLIENT_VALUES),
   startingRank: z.enum(RANK_TIER_VALUES),
   visibleClients: z.array(z.enum(TASK_CLIENT_VALUES)).optional(),
 });
@@ -207,6 +219,8 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
     name: formData.get("name"),
     email: formData.get("email"),
     password: formData.get("password") || undefined,
+    role: formData.get("role") || "COLLABORATOR",
+    primaryClient: formData.get("primaryClient"),
     startingRank: formData.get("startingRank"),
     visibleClients: formData.getAll("visibleClients"),
   });
@@ -231,11 +245,15 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
   const updateData: {
     name: string;
     email: string;
+    role: Role;
+    primaryClient: TaskClient;
     startingRank: (typeof RANK_TIER_VALUES)[number];
     passwordHash?: string;
   } = {
     name: parsed.data.name,
     email,
+    role: parsed.data.role as Role,
+    primaryClient: parsed.data.primaryClient as TaskClient,
     startingRank: parsed.data.startingRank,
   };
 
@@ -249,7 +267,7 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
   const result = await prisma.user.updateMany({
     where: {
       id: parsed.data.collaboratorId,
-      role: Role.COLLABORATOR,
+      role: { in: STAFF_ROLES },
       isActive: true,
     },
     data: updateData,
@@ -259,7 +277,8 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
     throw new Error("No se encontro el colaborador para editar.");
   }
 
-  const allowedClients = parsed.data.visibleClients ?? [];
+  const selectedClients = parsed.data.visibleClients ?? [];
+  const allowedClients = Array.from(new Set([parsed.data.primaryClient, ...selectedClients]));
   await prisma.userClientAccess.deleteMany({
     where: { userId: parsed.data.collaboratorId },
   });
@@ -453,7 +472,7 @@ export async function updateTaskDatesByAdminAction(formData: FormData) {
   const assignee = await prisma.user.findFirst({
     where: {
       id: parsed.data.assigneeId,
-      role: Role.COLLABORATOR,
+      role: { in: STAFF_ROLES },
       isActive: true,
     },
     select: { id: true },
@@ -529,7 +548,7 @@ export async function deleteCollaboratorAction(formData: FormData) {
   await prisma.user.deleteMany({
     where: {
       id: parsed.data.collaboratorId,
-      role: Role.COLLABORATOR,
+      role: { in: STAFF_ROLES },
     },
   });
 

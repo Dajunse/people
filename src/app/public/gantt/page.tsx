@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { TaskClient, TaskStatus } from "@prisma/client";
+import { Role, TaskClient, TaskStatus } from "@prisma/client";
 import { GanttTaskEditor } from "@/components/gantt-task-editor";
 import { PublicGanttBoard } from "@/components/public-gantt-board";
 import { getAvatarPreset } from "@/lib/avatar-presets";
@@ -24,6 +24,7 @@ import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 export const dynamic = "force-dynamic";
 
 const ZOOM_SEQUENCE = ["1w", "2w", "3w", "1m", "2m", "3m", "4m", "5m", "6m"] as const;
+const STAFF_ROLES: Role[] = [Role.COLLABORATOR, Role.MANAGER];
 
 export default async function PublicGanttPage({
   searchParams,
@@ -70,6 +71,8 @@ export default async function PublicGanttPage({
   };
 
   const currentUser = await getCurrentUser();
+  const isManager = currentUser?.role === "MANAGER";
+  const canCreateTasks = currentUser?.role === "ADMIN" || currentUser?.role === "MANAGER";
   const viewerAllowedClients = currentUser && currentUser.role !== "ADMIN"
     ? await prisma.userClientAccess.findMany({
         where: { userId: currentUser.id },
@@ -82,14 +85,20 @@ export default async function PublicGanttPage({
   const taskClientWhere = allowedClientValues
     ? { client: { in: allowedClientValues } }
     : {};
+  const collaboratorWhere = currentUser?.role === "ADMIN"
+    ? { role: { in: STAFF_ROLES }, isActive: true }
+    : currentUser?.role === "MANAGER" && currentUser.primaryClient
+      ? { role: { in: STAFF_ROLES }, isActive: true, primaryClient: currentUser.primaryClient }
+      : { role: Role.COLLABORATOR, isActive: true };
 
   const [collaborators, selectedTask] = await Promise.all([
     prisma.user.findMany({
-      where: { role: "COLLABORATOR", isActive: true },
+      where: collaboratorWhere,
       orderBy: { name: "asc" },
       select: {
         id: true,
         name: true,
+        primaryClient: true,
         dashboardTone: true,
         avatarPreset: true,
         assignedTasks: {
@@ -132,6 +141,7 @@ export default async function PublicGanttPage({
               select: {
                 id: true,
                 name: true,
+                primaryClient: true,
               },
             },
           },
@@ -141,6 +151,8 @@ export default async function PublicGanttPage({
   const selectedTaskAllowed = selectedTask
     ? !allowedClientValues || (selectedTask.client ? allowedClientValues.includes(selectedTask.client) : false)
     : false;
+  const selectedTaskManageableByManager =
+    isManager && currentUser?.primaryClient && selectedTask?.assignee.primaryClient === currentUser.primaryClient;
 
   const scheduledEntries = collaborators.flatMap((collaborator) =>
     collaborator.assignedTasks
@@ -205,7 +217,7 @@ export default async function PublicGanttPage({
         expectedDoneAt: task.expectedDoneAt?.toISOString() ?? null,
       })),
     };
-  }).filter((collaborator) => currentUser?.role === "ADMIN" || !allowedClientValues || collaborator.assignedTasks.length > 0);
+  }).filter((collaborator) => canCreateTasks || !allowedClientValues || collaborator.assignedTasks.length > 0);
 
   return (
     <main className="min-h-screen bg-[#f4f6f8] px-6 py-8 text-slate-900">
@@ -271,14 +283,16 @@ export default async function PublicGanttPage({
               >
                 Filtros
               </Link>
-              {currentUser?.role === "ADMIN" ? (
+              {canCreateTasks ? (
                 <>
-                  <Link
-                    href={buildGanttHref(zoomKey, { createCollaborator: true })}
-                    className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                  >
-                    Nuevo colaborador
-                  </Link>
+                  {currentUser?.role === "ADMIN" ? (
+                    <Link
+                      href={buildGanttHref(zoomKey, { createCollaborator: true })}
+                      className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Nuevo colaborador
+                    </Link>
+                  ) : null}
                   <Link
                     href={buildGanttHref(zoomKey, { create: true })}
                     className="rounded-full border border-slate-900 bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
@@ -360,7 +374,7 @@ export default async function PublicGanttPage({
         </section>
       </div>
 
-      {currentUser && selectedTask && selectedTaskAllowed && (currentUser.role === "ADMIN" || selectedTask.assigneeId === currentUser.id) ? (
+      {currentUser && selectedTask && selectedTaskAllowed && (currentUser.role === "ADMIN" || selectedTask.assigneeId === currentUser.id || selectedTaskManageableByManager) ? (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 px-4 py-8 backdrop-blur-[3px]">
           <Link
             href={`/public/gantt?zoom=${zoomKey}`}
@@ -371,7 +385,7 @@ export default async function PublicGanttPage({
             <GanttTaskEditor
               currentUser={currentUser}
               task={selectedTask}
-              collaborators={collaborators.map((collaborator) => ({ id: collaborator.id, name: collaborator.name }))}
+              collaborators={boardCollaborators.map((collaborator) => ({ id: collaborator.id, name: collaborator.name }))}
               zoomKey={zoomKey}
             />
           </div>

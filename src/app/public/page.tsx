@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { TaskStatus } from "@prisma/client";
+import { Role, TaskStatus } from "@prisma/client";
 import { getAvatarPreset } from "@/lib/avatar-presets";
 import { getDashboardTone } from "@/lib/dashboard-tones";
 import { prisma } from "@/lib/prisma";
@@ -28,7 +28,7 @@ function TaskStars({ value }: { value: number }) {
 export default async function PublicDashboardPage() {
   const [collaborators, settingsRecord] = await Promise.all([
     prisma.user.findMany({
-      where: { role: "COLLABORATOR", isActive: true },
+      where: { role: { in: [Role.COLLABORATOR, Role.MANAGER] }, isActive: true },
       orderBy: { name: "asc" },
       select: {
         id: true,

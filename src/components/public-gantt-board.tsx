@@ -161,8 +161,9 @@ export function PublicGanttBoard({
   allowedClientValues: TaskClient[];
 }) {
   const router = useRouter();
-  const canPlan = currentUserRole === "ADMIN";
-  const canViewNoClientOption = canPlan;
+  const canPlan = currentUserRole === "ADMIN" || currentUserRole === "MANAGER";
+  const canManageUsers = currentUserRole === "ADMIN";
+  const canViewNoClientOption = canManageUsers;
   const collaboratorIds = collaborators.map((collaborator) => collaborator.id);
   const availableClientValues = allowedClientValues;
   const validClientKeys = canViewNoClientOption
@@ -369,7 +370,7 @@ export function PublicGanttBoard({
   };
 
   const handleCreateCollaborator = () => {
-    if (!canPlan) return;
+    if (!canManageUsers) return;
 
     const cleanName = newCollaboratorName.trim();
     const cleanEmail = newCollaboratorEmail.trim().toLowerCase();
@@ -448,7 +449,9 @@ export function PublicGanttBoard({
       ) : null}
       {visibleCollaborators.map((collaborator) => {
         const barSwatch = getBarSwatch(collaborator.dashboardTone);
-        const canOpenModal = currentUserId ? currentUserRole === "ADMIN" || currentUserId === collaborator.id : false;
+        const canOpenModal = currentUserId
+          ? currentUserRole === "ADMIN" || currentUserRole === "MANAGER" || currentUserId === collaborator.id
+          : false;
         const taskEntries = collaborator.assignedTasks.flatMap((task) => {
           const schedule = parseTaskSchedule(task, overrides[task.id]);
           return schedule ? [{ task, schedule }] : [];
@@ -849,7 +852,7 @@ export function PublicGanttBoard({
           </section>
         </div>
       ) : null}
-      {canPlan && isCreateCollaboratorModalOpen ? (
+      {canManageUsers && isCreateCollaboratorModalOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/30 px-4">
           <button
             type="button"

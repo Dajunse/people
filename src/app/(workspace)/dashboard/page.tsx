@@ -32,7 +32,7 @@ export default async function DashboardPage() {
       take: 60,
     }),
     prisma.user.findMany({
-      where: { role: Role.COLLABORATOR, isActive: true },
+      where: { role: { in: [Role.COLLABORATOR, Role.MANAGER] }, isActive: true },
       orderBy: { name: "asc" },
     }),
     prisma.taskHistory.findMany({

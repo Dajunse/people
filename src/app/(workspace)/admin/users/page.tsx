@@ -17,12 +17,14 @@ export default async function AdminUsersPage() {
   await requireAdmin();
 
   const collaborators = await prisma.user.findMany({
-    where: { role: Role.COLLABORATOR, isActive: true },
+    where: { role: { in: [Role.COLLABORATOR, Role.MANAGER] }, isActive: true },
     orderBy: { name: "asc" },
     select: {
       id: true,
       name: true,
       email: true,
+      role: true,
+      primaryClient: true,
       dashboardTone: true,
       avatarPreset: true,
       startingRank: true,
@@ -45,7 +47,7 @@ export default async function AdminUsersPage() {
 
       <div className="grid gap-3 md:grid-cols-3">
         <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-          <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">Colaboradores activos</p>
+          <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">Usuarios activos</p>
           <p className="mt-2 text-3xl font-semibold text-zinc-900">{collaborators.length}</p>
         </article>
         <article className="rounded-2xl border border-zinc-200 bg-white p-4">
@@ -61,7 +63,7 @@ export default async function AdminUsersPage() {
       <article className="rounded-2xl border border-zinc-200 bg-white p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-900">Nuevo colaborador</h2>
+            <h2 className="text-lg font-semibold text-zinc-900">Nuevo usuario</h2>
             <p className="mt-1 text-sm text-zinc-600">
               Crea una cuenta lista para entrar al dashboard y personaliza su tarjeta desde el inicio.
             </p>
@@ -99,6 +101,23 @@ export default async function AdminUsersPage() {
               {AVATAR_PRESET_OPTIONS.map((avatar) => (
                 <option key={avatar.value} value={avatar.value}>
                   {avatar.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-zinc-700">Rol</label>
+            <select name="role" required defaultValue="COLLABORATOR" className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2">
+              <option value="COLLABORATOR">Colaborador</option>
+              <option value="MANAGER">Lider</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-zinc-700">Empresa a la que pertenece</label>
+            <select name="primaryClient" required defaultValue="SCIO" className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2">
+              {TASK_CLIENT_VALUES.map((client) => (
+                <option key={client} value={client}>
+                  {taskClientLabel(client)}
                 </option>
               ))}
             </select>
@@ -146,13 +165,16 @@ export default async function AdminUsersPage() {
                 <p className="text-sm font-semibold text-zinc-900">{collaborator.name}</p>
                 <span className="text-xs text-zinc-400">-</span>
                 <p className="text-xs text-zinc-600">{collaborator.email}</p>
+                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] text-zinc-600">
+                  {collaborator.role === Role.MANAGER ? "Lider" : "Colaborador"} · {taskClientLabel(collaborator.primaryClient)}
+                </span>
                 <div className="ml-auto">
                   <DeleteCollaboratorButton collaboratorId={collaborator.id} />
                 </div>
               </div>
               <form
                 action={updateCollaboratorProfileAction}
-                className="grid gap-2 rounded-xl border border-zinc-200 p-2 md:grid-cols-[minmax(140px,1fr)_minmax(220px,1.4fr)_minmax(170px,1fr)_minmax(170px,1fr)_auto] md:items-center"
+                className="grid gap-2 rounded-xl border border-zinc-200 p-2 md:grid-cols-[minmax(120px,1fr)_minmax(220px,1.4fr)_minmax(150px,1fr)_minmax(140px,1fr)_minmax(140px,1fr)_minmax(150px,1fr)_auto] md:items-center"
               >
                 <input type="hidden" name="collaboratorId" value={collaborator.id} />
                 <div>
@@ -186,6 +208,31 @@ export default async function AdminUsersPage() {
                 </div>
                 <div>
                   <select
+                    name="role"
+                    defaultValue={collaborator.role}
+                    aria-label="Rol"
+                    className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="COLLABORATOR">Colaborador</option>
+                    <option value="MANAGER">Lider</option>
+                  </select>
+                </div>
+                <div>
+                  <select
+                    name="primaryClient"
+                    defaultValue={collaborator.primaryClient ?? "SCIO"}
+                    aria-label="Empresa principal"
+                    className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm"
+                  >
+                    {TASK_CLIENT_VALUES.map((client) => (
+                      <option key={client} value={client}>
+                        {taskClientLabel(client)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <select
                     name="startingRank"
                     defaultValue={collaborator.startingRank}
                     aria-label="Rango inicial"
@@ -205,7 +252,7 @@ export default async function AdminUsersPage() {
                     className="w-full rounded-xl bg-black px-3 py-2 text-sm font-medium text-white md:w-auto disabled:cursor-not-allowed disabled:opacity-70"
                   />
                 </div>
-                <div className="md:col-span-5">
+                <div className="md:col-span-7">
                   <p className="mb-1 text-xs uppercase tracking-[0.12em] text-zinc-500">Empresas visibles</p>
                   <div className="grid gap-2 sm:grid-cols-3">
                     {TASK_CLIENT_VALUES.map((client) => (

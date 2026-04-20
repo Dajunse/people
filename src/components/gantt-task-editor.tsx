@@ -38,6 +38,8 @@ export function GanttTaskEditor({
   zoomKey: string;
 }) {
   const isAdmin = currentUser.role === Role.ADMIN;
+  const isManager = currentUser.role === Role.MANAGER;
+  const canReassign = isAdmin || isManager;
 
   return (
     <section className="rounded-[32px] border border-white/70 bg-white p-6 shadow-[0_32px_100px_-36px_rgba(15,23,42,0.45)]">
@@ -145,7 +147,7 @@ export function GanttTaskEditor({
 
         <div>
           <label className="mb-1 block text-sm text-slate-700">Responsable</label>
-          {isAdmin ? (
+          {canReassign ? (
             <select
               name="assigneeId"
               defaultValue={task.assigneeId}
@@ -169,7 +171,7 @@ export function GanttTaskEditor({
 
         <div className="xl:col-span-4 flex flex-wrap items-center justify-between gap-3 pt-2">
           <p className="text-sm text-slate-500">
-            Solo el responsable de la tarea o un admin puede editarla desde esta vista.
+            Responsable, lider de empresa o admin pueden editarla desde esta vista.
           </p>
           <SubmitButton
             idleLabel="Guardar cambios"

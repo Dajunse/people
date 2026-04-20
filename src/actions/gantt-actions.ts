@@ -8,6 +8,8 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 
+const STAFF_ROLES: Role[] = [Role.COLLABORATOR, Role.MANAGER];
+
 const updateTaskFromGanttSchema = z.object({
   taskId: z.string().min(1),
   title: z.string().min(2),
@@ -90,6 +92,13 @@ function parseOptionalDate(value?: string) {
   return parsed;
 }
 
+function assertManagerPrimaryClient(user: { role: Role; primaryClient: TaskClient | null }) {
+  if (user.role !== Role.MANAGER) return;
+  if (!user.primaryClient) {
+    throw new Error("El lider no tiene empresa principal configurada.");
+  }
+}
+
 export async function updateTaskFromGanttAction(formData: FormData) {
   const user = await requireUser();
 
@@ -114,9 +123,15 @@ export async function updateTaskFromGanttAction(formData: FormData) {
     select: {
       id: true,
       assigneeId: true,
+      client: true,
       startedAt: true,
       almostDoneAt: true,
       completedAt: true,
+      assignee: {
+        select: {
+          primaryClient: true,
+        },
+      },
     },
   });
 
@@ -124,16 +139,45 @@ export async function updateTaskFromGanttAction(formData: FormData) {
     throw new Error("Tarea no encontrada.");
   }
 
-  const canEdit = user.role === Role.ADMIN || task.assigneeId === user.id;
+  assertManagerPrimaryClient(user);
+  const managerCanEditTeamTask =
+    user.role === Role.MANAGER &&
+    user.primaryClient &&
+    task.assignee.primaryClient === user.primaryClient;
+  const canEdit = user.role === Role.ADMIN || task.assigneeId === user.id || Boolean(managerCanEditTeamTask);
   if (!canEdit) {
     throw new Error("No tienes permiso para editar esta tarea.");
   }
 
-  if (user.role !== Role.ADMIN && parsed.data.assigneeId !== task.assigneeId) {
-    throw new Error("Solo admin puede reasignar tareas.");
+  if (user.role === Role.MANAGER && parsed.data.client !== user.primaryClient) {
+    throw new Error("Solo puedes gestionar tareas de tu empresa.");
   }
 
-  const assigneeId = user.role === Role.ADMIN ? parsed.data.assigneeId : task.assigneeId;
+  if (user.role === Role.COLLABORATOR && parsed.data.assigneeId !== task.assigneeId) {
+    throw new Error("Solo admin o lider puede reasignar tareas.");
+  }
+
+  let assigneeId = task.assigneeId;
+  if (user.role === Role.ADMIN) {
+    assigneeId = parsed.data.assigneeId;
+  }
+  if (user.role === Role.MANAGER) {
+    if (parsed.data.assigneeId !== task.assigneeId) {
+      const nextAssignee = await prisma.user.findFirst({
+        where: {
+          id: parsed.data.assigneeId,
+          role: { in: STAFF_ROLES },
+          isActive: true,
+          primaryClient: user.primaryClient,
+        },
+        select: { id: true },
+      });
+      if (!nextAssignee) {
+        throw new Error("Solo puedes reasignar a colegas de tu empresa.");
+      }
+      assigneeId = nextAssignee.id;
+    }
+  }
 
   const startedAt = parsed.data.startedAt ? new Date(parsed.data.startedAt) : null;
   const dueDate = parsed.data.dueDate ? new Date(parsed.data.dueDate) : null;
@@ -189,9 +233,10 @@ export async function shiftTaskScheduleAction(input: {
   assigneeId?: string;
 }) {
   const user = await requireUser();
-
-  if (user.role !== Role.ADMIN) {
-    throw new Error("Solo admin puede reorganizar la linea del tiempo.");
+  assertManagerPrimaryClient(user);
+  const canShift = user.role === Role.ADMIN || user.role === Role.MANAGER;
+  if (!canShift) {
+    throw new Error("No tienes permiso para reorganizar la linea del tiempo.");
   }
 
   const parsed = shiftTaskScheduleSchema.safeParse(input);
@@ -201,11 +246,22 @@ export async function shiftTaskScheduleAction(input: {
 
   const task = await prisma.task.findUnique({
     where: { id: parsed.data.taskId },
-    select: { id: true, assigneeId: true },
+    select: {
+      id: true,
+      assigneeId: true,
+      assignee: {
+        select: {
+          primaryClient: true,
+        },
+      },
+    },
   });
 
   if (!task) {
     throw new Error("Tarea no encontrada.");
+  }
+  if (user.role === Role.MANAGER && task.assignee.primaryClient !== user.primaryClient) {
+    throw new Error("Solo puedes mover tareas de colegas de tu empresa.");
   }
 
   const startedAt = new Date(parsed.data.startedAt);
@@ -220,8 +276,9 @@ export async function shiftTaskScheduleAction(input: {
     const assignee = await prisma.user.findFirst({
       where: {
         id: parsed.data.assigneeId,
-        role: Role.COLLABORATOR,
+        role: { in: STAFF_ROLES },
         isActive: true,
+        ...(user.role === Role.MANAGER ? { primaryClient: user.primaryClient } : {}),
       },
       select: { id: true },
     });
@@ -255,23 +312,28 @@ export async function createTaskFromGanttAction(input: {
   dueDate?: string;
 }) {
   const user = await requireUser();
-
-  if (user.role !== Role.ADMIN) {
-    throw new Error("Solo admin puede crear tareas desde el Gantt.");
+  assertManagerPrimaryClient(user);
+  const canCreate = user.role === Role.ADMIN || user.role === Role.MANAGER;
+  if (!canCreate) {
+    throw new Error("No tienes permiso para crear tareas desde el Gantt.");
   }
 
   const parsed = createTaskFromGanttSchema.safeParse(input);
   if (!parsed.success) {
     throw new Error("Payload invalido para crear la tarea desde Gantt.");
   }
+  if (user.role === Role.MANAGER && parsed.data.client !== user.primaryClient) {
+    throw new Error("Solo puedes crear tareas para tu empresa.");
+  }
 
   const assignee = await prisma.user.findFirst({
     where: {
       id: parsed.data.assigneeId,
-      role: Role.COLLABORATOR,
+      role: { in: STAFF_ROLES },
       isActive: true,
+      ...(user.role === Role.MANAGER ? { primaryClient: user.primaryClient } : {}),
     },
-    select: { id: true },
+    select: { id: true, primaryClient: true },
   });
 
   if (!assignee) {
@@ -346,6 +408,7 @@ export async function createCollaboratorFromGanttAction(input: {
     update: {
       name: parsed.data.name,
       role: Role.COLLABORATOR,
+      primaryClient: "SCIO",
       isActive: true,
       passwordHash,
       dashboardTone: "OCEAN",
@@ -356,6 +419,7 @@ export async function createCollaboratorFromGanttAction(input: {
       name: parsed.data.name,
       email: parsed.data.email.toLowerCase(),
       role: Role.COLLABORATOR,
+      primaryClient: "SCIO",
       isActive: true,
       passwordHash,
       dashboardTone: "OCEAN",

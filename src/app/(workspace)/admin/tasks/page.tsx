@@ -53,7 +53,7 @@ export default async function AdminTasksPage({
 
   const [collaborators, taskCounts, tasks] = await Promise.all([
     prisma.user.findMany({
-      where: { role: Role.COLLABORATOR, isActive: true },
+      where: { role: { in: [Role.COLLABORATOR, Role.MANAGER] }, isActive: true },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),

@@ -1,4 +1,4 @@
-import { TaskStatus } from "@prisma/client";
+import { Role, TaskStatus } from "@prisma/client";
 import { createRewardAction, deleteRewardAction, updateRewardSettingsAction } from "@/actions/admin-actions";
 import { AdminSectionsNav } from "@/components/admin-sections-nav";
 import { PageTitle } from "@/components/page-title";
@@ -18,7 +18,7 @@ export default async function AdminRewardsPage() {
   const [settingsRecord, collaborators, rewards] = await Promise.all([
     prisma.rewardSettings.findUnique({ where: { id: "default" } }),
     prisma.user.findMany({
-      where: { role: "COLLABORATOR", isActive: true },
+      where: { role: { in: [Role.COLLABORATOR, Role.MANAGER] }, isActive: true },
       orderBy: { name: "asc" },
       select: { id: true, name: true, email: true, startingRank: true },
     }),
