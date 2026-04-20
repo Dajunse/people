@@ -84,6 +84,51 @@ const COLLABORATOR_FILTERS_STORAGE_KEY = "people_gantt_filters_collaborators";
 const CLIENT_FILTERS_STORAGE_KEY = "people_gantt_filters_clients";
 const DRAG_ACTIVATION_PX = 4;
 
+function toInputDate(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function fromInputDate(value: string) {
+  const [year, month, day] = value.split("-").map((part) => Number.parseInt(part, 10));
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
+}
+
+function nextBusinessDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  while (isWeekend(next)) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next;
+}
+
+function addBusinessDaysInclusive(date: Date, totalBusinessDays: number) {
+  const safeTotal = Math.max(totalBusinessDays, 1);
+  const next = nextBusinessDay(date);
+  let remaining = safeTotal - 1;
+
+  while (remaining > 0) {
+    next.setDate(next.getDate() + 1);
+    if (!isWeekend(next)) {
+      remaining -= 1;
+    }
+  }
+
+  return next;
+}
+
+function getDefaultTaskDates() {
+  const start = new Date();
+  const end = addBusinessDaysInclusive(start, 5);
+  return {
+    startDate: toInputDate(start),
+    dueDate: toInputDate(end),
+  };
+}
+
 export function PublicGanttBoard({
   collaborators,
   currentUserId,
@@ -135,6 +180,8 @@ export function PublicGanttBoard({
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskClient, setNewTaskClient] = useState<TaskClient>(availableClientValues[0] ?? "SCIO");
   const [newTaskAssigneeId, setNewTaskAssigneeId] = useState(collaborators[0]?.id ?? "");
+  const [newTaskStartDate, setNewTaskStartDate] = useState(() => getDefaultTaskDates().startDate);
+  const [newTaskDueDate, setNewTaskDueDate] = useState(() => getDefaultTaskDates().dueDate);
   const [newCollaboratorName, setNewCollaboratorName] = useState("");
   const [newCollaboratorEmail, setNewCollaboratorEmail] = useState("");
   const [newCollaboratorPassword, setNewCollaboratorPassword] = useState("");
@@ -281,6 +328,17 @@ export function PublicGanttBoard({
       setDragMessage({ type: "error", text: "Selecciona un colaborador para asignar la tarea." });
       return;
     }
+    if (!newTaskStartDate || !newTaskDueDate) {
+      setDragMessage({ type: "error", text: "Selecciona fecha de inicio y fecha fin." });
+      return;
+    }
+
+    const startDate = fromInputDate(newTaskStartDate);
+    const dueDate = fromInputDate(newTaskDueDate);
+    if (dueDate.getTime() < startDate.getTime()) {
+      setDragMessage({ type: "error", text: "La fecha fin no puede ser menor a la fecha inicio." });
+      return;
+    }
 
     setDragMessage(null);
 
@@ -290,9 +348,14 @@ export function PublicGanttBoard({
           title: cleanTitle,
           client: newTaskClient,
           assigneeId: newTaskAssigneeId,
+          startedAt: newTaskStartDate,
+          dueDate: newTaskDueDate,
         });
+        const defaults = getDefaultTaskDates();
         setNewTaskTitle("");
         setNewTaskClient(availableClientValues[0] ?? "SCIO");
+        setNewTaskStartDate(defaults.startDate);
+        setNewTaskDueDate(defaults.dueDate);
         closeCreateModal();
         setDragMessage({ type: "success", text: "Tarea creada correctamente." });
         router.refresh();
@@ -735,6 +798,33 @@ export function PublicGanttBoard({
                       </option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm text-slate-700">Fecha inicio</label>
+                  <input
+                    type="date"
+                    value={newTaskStartDate}
+                    onChange={(event) => {
+                      const nextStartDate = event.target.value;
+                      setNewTaskStartDate(nextStartDate);
+                      if (newTaskDueDate && fromInputDate(newTaskDueDate).getTime() < fromInputDate(nextStartDate).getTime()) {
+                        setNewTaskDueDate(nextStartDate);
+                      }
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-slate-700">Fecha fin</label>
+                  <input
+                    type="date"
+                    value={newTaskDueDate}
+                    onChange={(event) => setNewTaskDueDate(event.target.value)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
                 </div>
               </div>
             </div>

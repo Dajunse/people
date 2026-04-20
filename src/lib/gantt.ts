@@ -12,6 +12,10 @@ export const ZOOM_OPTIONS = {
   "3w": { label: "3 semanas", days: 21, dayWidth: 68 },
   "1m": { label: "1 mes", days: 31, dayWidth: 56 },
   "2m": { label: "2 meses", days: 62, dayWidth: 40 },
+  "3m": { label: "3 meses", days: 93, dayWidth: 32 },
+  "4m": { label: "4 meses", days: 124, dayWidth: 28 },
+  "5m": { label: "5 meses", days: 155, dayWidth: 24 },
+  "6m": { label: "6 meses", days: 186, dayWidth: 22 },
 } as const;
 
 const toneSwatchMap = Object.fromEntries(

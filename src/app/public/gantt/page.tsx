@@ -23,7 +23,7 @@ import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 
 export const dynamic = "force-dynamic";
 
-const ZOOM_SEQUENCE = ["1w", "2w", "3w", "1m", "2m"] as const;
+const ZOOM_SEQUENCE = ["1w", "2w", "3w", "1m", "2m", "3m", "4m", "5m", "6m"] as const;
 
 export default async function PublicGanttPage({
   searchParams,

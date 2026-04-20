@@ -31,6 +31,8 @@ const createTaskFromGanttSchema = z.object({
   title: z.string().min(2),
   client: z.enum(TASK_CLIENT_VALUES),
   assigneeId: z.string().min(1),
+  startedAt: z.string().optional(),
+  dueDate: z.string().optional(),
 });
 
 const createCollaboratorFromGanttSchema = z.object({
@@ -71,6 +73,21 @@ function addBusinessDaysInclusive(date: Date, totalBusinessDays: number) {
   }
 
   return next;
+}
+
+function parseOptionalDate(value?: string) {
+  if (!value) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map((part) => Number.parseInt(part, 10));
+    return new Date(year, month - 1, day, 0, 0, 0, 0);
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
 }
 
 export async function updateTaskFromGanttAction(formData: FormData) {
@@ -234,6 +251,8 @@ export async function createTaskFromGanttAction(input: {
   title: string;
   client: TaskClient;
   assigneeId: string;
+  startedAt?: string;
+  dueDate?: string;
 }) {
   const user = await requireUser();
 
@@ -259,8 +278,22 @@ export async function createTaskFromGanttAction(input: {
     throw new Error("Colaborador asignado invalido.");
   }
 
-  const startedAt = nextBusinessDay(new Date());
-  const dueDate = addBusinessDaysInclusive(startedAt, 5);
+  const parsedStartedAt = parseOptionalDate(parsed.data.startedAt);
+  const parsedDueDate = parseOptionalDate(parsed.data.dueDate);
+
+  if (parsed.data.startedAt && !parsedStartedAt) {
+    throw new Error("Fecha de inicio invalida.");
+  }
+  if (parsed.data.dueDate && !parsedDueDate) {
+    throw new Error("Fecha fin invalida.");
+  }
+
+  const startedAt = parsedStartedAt ? startOfDay(parsedStartedAt) : startOfDay(new Date());
+  const dueDate = parsedDueDate ? startOfDay(parsedDueDate) : addBusinessDaysInclusive(startedAt, 5);
+
+  if (dueDate.getTime() < startedAt.getTime()) {
+    throw new Error("La fecha fin no puede ser menor a la fecha inicio.");
+  }
 
   const task = await prisma.task.create({
     data: {
@@ -281,7 +314,7 @@ export async function createTaskFromGanttAction(input: {
       taskId: task.id,
       userId: user.id,
       action: TaskHistoryAction.CREATED,
-      note: "Creada desde Gantt publico por arrastre.",
+      note: "Creada desde Gantt publico.",
     },
   });
 
