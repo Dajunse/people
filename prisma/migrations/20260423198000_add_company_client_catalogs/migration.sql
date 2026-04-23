@@ -1,0 +1,19 @@
+CREATE TABLE "Company" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "isActive" BOOLEAN NOT NULL DEFAULT true,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL
+);
+
+CREATE UNIQUE INDEX "Company_name_key" ON "Company"("name");
+
+CREATE TABLE "Client" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "isActive" BOOLEAN NOT NULL DEFAULT true,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL
+);
+
+CREATE UNIQUE INDEX "Client_name_key" ON "Client"("name");

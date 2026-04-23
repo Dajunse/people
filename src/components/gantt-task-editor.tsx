@@ -3,7 +3,6 @@ import { Role, TaskStatus, type User } from "@prisma/client";
 import { updateTaskFromGanttAction } from "@/actions/gantt-actions";
 import { DeleteTaskButton } from "@/components/delete-task-button";
 import { taskClientLabel, taskStatusLabel } from "@/lib/labels";
-import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 import { SubmitButton } from "@/components/submit-button";
 
 function toDateTimeLocal(date: Date | null) {
@@ -17,6 +16,7 @@ export function GanttTaskEditor({
   task,
   collaborators,
   zoomKey,
+  availableClientValues,
 }: {
   currentUser: User;
   task: {
@@ -36,6 +36,7 @@ export function GanttTaskEditor({
   };
   collaborators: Array<{ id: string; name: string }>;
   zoomKey: string;
+  availableClientValues: string[];
 }) {
   const isAdmin = currentUser.role === Role.ADMIN;
   const isManager = currentUser.role === Role.MANAGER;
@@ -79,10 +80,10 @@ export function GanttTaskEditor({
           <label className="mb-1 block text-sm text-slate-700">Cliente</label>
           <select
             name="client"
-            defaultValue={task.client ?? "SCIO"}
+            defaultValue={task.client ?? availableClientValues[0] ?? "SCIO"}
             className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2"
           >
-            {TASK_CLIENT_VALUES.map((client) => (
+            {availableClientValues.map((client) => (
               <option key={client} value={client}>
                 {taskClientLabel(client)}
               </option>
