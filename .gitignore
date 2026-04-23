@@ -44,3 +44,8 @@ next-env.d.ts
 /prisma/dev.db
 /prisma/dev.db-journal
 .codex-dev.log
+
+# local dev
+.dev.log
+.dev.err.log
+dev.db
