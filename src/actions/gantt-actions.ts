@@ -486,4 +486,6 @@ export async function createCollaboratorFromGanttAction(input: {
   revalidatePath("/admin/tasks");
   revalidatePath("/public");
   revalidatePath("/public/gantt");
+
+  return { collaboratorId: collaborator.id };
 }

@@ -8,6 +8,7 @@ import {
   LABEL_WIDTH,
   ZOOM_OPTIONS,
   addDays,
+  addMonths,
   diffInDays,
   firstValue,
   getIsoWeekInfo,
@@ -25,6 +26,7 @@ export const dynamic = "force-dynamic";
 
 const ZOOM_SEQUENCE = ["1w", "2w", "3w", "1m", "2m", "3m", "4m", "5m", "6m"] as const;
 const STAFF_ROLES: Role[] = [Role.COLLABORATOR, Role.MANAGER];
+const PLANNED_RANGE_MONTH_PADDING = 3;
 
 export default async function PublicGanttPage({
   searchParams,
@@ -74,12 +76,20 @@ export default async function PublicGanttPage({
   const isManager = currentUser?.role === "MANAGER";
   const viewerCompany = currentUser?.company?.trim() || null;
   const canCreateTasks = currentUser?.role === "ADMIN" || currentUser?.role === "MANAGER";
-  const activeClients = await prisma.client.findMany({
-    where: { isActive: true },
-    orderBy: { name: "asc" },
-    select: { name: true },
-  });
+  const [activeClients, activeCompanies] = await Promise.all([
+    prisma.client.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { name: true },
+    }),
+    prisma.company.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { name: true },
+    }),
+  ]);
   const activeClientValues = activeClients.length > 0 ? activeClients.map((client) => client.name) : [...TASK_CLIENT_VALUES];
+  const activeCompanyValues = activeCompanies.map((company) => company.name);
 
   const viewerAllowedClients = currentUser && currentUser.role !== "ADMIN"
     ? await prisma.userClientAccess.findMany({
@@ -179,16 +189,20 @@ export default async function PublicGanttPage({
   );
 
   const today = startOfDay(new Date());
-  const rangeStart = scheduledEntries.length
-    ? addDays(
-        scheduledEntries.reduce(
-          (min, entry) => (entry.schedule.start.getTime() < min.getTime() ? entry.schedule.start : min),
-          scheduledEntries[0].schedule.start,
-        ),
-        -1,
+  const plannedStart = scheduledEntries.length
+    ? scheduledEntries.reduce(
+        (min, entry) => (entry.schedule.start.getTime() < min.getTime() ? entry.schedule.start : min),
+        scheduledEntries[0].schedule.start,
       )
-    : addDays(today, -2);
-  const rangeEnd = addDays(rangeStart, zoom.days - 1);
+    : today;
+  const plannedEnd = scheduledEntries.length
+    ? scheduledEntries.reduce(
+        (max, entry) => (entry.schedule.end.getTime() > max.getTime() ? entry.schedule.end : max),
+        scheduledEntries[0].schedule.end,
+      )
+    : today;
+  const rangeStart = addMonths(plannedStart, -PLANNED_RANGE_MONTH_PADDING);
+  const rangeEnd = addMonths(plannedEnd, PLANNED_RANGE_MONTH_PADDING);
 
   const dayCount = Math.max(diffInDays(rangeStart, rangeEnd) + 1, 1);
   const days = Array.from({ length: dayCount }, (_, index) => addDays(rangeStart, index));
@@ -233,11 +247,12 @@ export default async function PublicGanttPage({
     };
   }).filter((collaborator) => canCreateTasks || !allowedClientValues || collaborator.assignedTasks.length > 0);
   const availableCompanyValues = Array.from(
-    new Set(
-      boardCollaborators
+    new Set([
+      ...activeCompanyValues,
+      ...boardCollaborators
         .map((collaborator) => collaborator.company?.trim() || "")
         .filter((company) => company.length > 0),
-    ),
+    ]),
   ).sort((a, b) => a.localeCompare(b));
 
   return (
@@ -327,10 +342,16 @@ export default async function PublicGanttPage({
           </div>
         </section>
 
-        <section className="overflow-x-auto rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]">
+        <section
+          data-gantt-scroll-container
+          className="overflow-x-auto rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]"
+        >
           <div style={{ minWidth: `${timelineWidth + LABEL_WIDTH + 24}px` }}>
             <div className="mb-4 flex items-end gap-4 border-b border-slate-200 pb-4">
-              <div className="shrink-0" style={{ width: `${LABEL_WIDTH}px` }} />
+              <div
+                className="sticky left-0 z-30 shrink-0 bg-white"
+                style={{ width: `${LABEL_WIDTH}px` }}
+              />
               <div className="shrink-0" style={{ width: `${timelineWidth}px` }}>
                 <div
                   className="grid border-b border-slate-200 pb-2"

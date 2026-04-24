@@ -2,7 +2,7 @@
 
 import { TaskStatus } from "@prisma/client";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   createCollaboratorFromGanttAction,
   createTaskFromGanttAction,
@@ -170,14 +170,16 @@ export function PublicGanttBoard({
   const canPlan = currentUserRole === "ADMIN" || currentUserRole === "MANAGER";
   const canManageUsers = currentUserRole === "ADMIN";
   const canViewNoClientOption = canManageUsers;
-  const collaboratorIds = collaborators.map((collaborator) => collaborator.id);
   const availableClientValues = allowedClientValues;
-  const validClientKeys = canViewNoClientOption
-    ? [...availableClientValues, NO_CLIENT_KEY]
-    : [...availableClientValues];
-  const validCompanyKeys = canManageUsers
-    ? [...availableCompanyValues, NO_COMPANY_KEY]
-    : [];
+  const collaboratorIds = useMemo(() => collaborators.map((collaborator) => collaborator.id), [collaborators]);
+  const validClientKeys = useMemo(
+    () => (canViewNoClientOption ? [...availableClientValues, NO_CLIENT_KEY] : [...availableClientValues]),
+    [availableClientValues, canViewNoClientOption],
+  );
+  const validCompanyKeys = useMemo(
+    () => (canManageUsers ? [...availableCompanyValues, NO_COMPANY_KEY] : []),
+    [availableCompanyValues, canManageUsers],
+  );
   const [overrides, setOverrides] = useState<Record<string, TaskOverride>>({});
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [hoverAssigneeId, setHoverAssigneeId] = useState<string | null>(null);
@@ -197,48 +199,17 @@ export function PublicGanttBoard({
   const [newCollaboratorPrimaryClient, setNewCollaboratorPrimaryClient] = useState<string>(
     availableClientValues[0] ?? "SCIO",
   );
-  const [selectedCollaboratorIds, setSelectedCollaboratorIds] = useState<string[]>(() => {
-    if (typeof window === "undefined") return collaboratorIds;
-    try {
-      const raw = window.localStorage.getItem(COLLABORATOR_FILTERS_STORAGE_KEY);
-      if (!raw) return collaboratorIds;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return collaboratorIds;
-      return parsed.filter((id): id is string => typeof id === "string");
-    } catch {
-      return collaboratorIds;
-    }
-  });
-  const [selectedClients, setSelectedClients] = useState<string[]>(() => {
-    if (typeof window === "undefined") return validClientKeys;
-    try {
-      const raw = window.localStorage.getItem(CLIENT_FILTERS_STORAGE_KEY);
-      if (!raw) return validClientKeys;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return validClientKeys;
-      return parsed.filter((key): key is string => typeof key === "string");
-    } catch {
-      return validClientKeys;
-    }
-  });
-  const [selectedCompanies, setSelectedCompanies] = useState<string[]>(() => {
-    if (typeof window === "undefined") return validCompanyKeys;
-    try {
-      const raw = window.localStorage.getItem(COMPANY_FILTERS_STORAGE_KEY);
-      if (!raw) return validCompanyKeys;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return validCompanyKeys;
-      return parsed.filter((key): key is string => typeof key === "string");
-    } catch {
-      return validCompanyKeys;
-    }
-  });
+  const [selectedCollaboratorIds, setSelectedCollaboratorIds] = useState<string[]>(collaboratorIds);
+  const [selectedClients, setSelectedClients] = useState<string[]>(validClientKeys);
+  const [selectedCompanies, setSelectedCompanies] = useState<string[]>(validCompanyKeys);
   const [isPending, startTransition] = useTransition();
+  const boardRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const dragChangedTaskRef = useRef<string | null>(null);
-  const today = startOfDay(new Date());
-  const rangeStart = new Date(rangeStartIso);
-  const rangeEnd = new Date(rangeEndIso);
+  const hasAutoScrolledRef = useRef(false);
+  const today = useMemo(() => startOfDay(new Date()), []);
+  const rangeStart = useMemo(() => new Date(rangeStartIso), [rangeStartIso]);
+  const rangeEnd = useMemo(() => new Date(rangeEndIso), [rangeEndIso]);
 
   useEffect(() => {
     setIsCreateModalOpen(Boolean(initialCreateModalOpen));
@@ -251,6 +222,74 @@ export function PublicGanttBoard({
   useEffect(() => {
     setIsFiltersModalOpen(Boolean(initialFiltersModalOpen));
   }, [initialFiltersModalOpen]);
+
+  useEffect(() => {
+    if (hasAutoScrolledRef.current) return;
+
+    const scrollContainer = boardRef.current?.closest<HTMLElement>("[data-gantt-scroll-container]");
+    if (!scrollContainer) return;
+
+    const clampedToday =
+      today.getTime() < rangeStart.getTime()
+        ? rangeStart
+        : today.getTime() > rangeEnd.getTime()
+          ? rangeEnd
+          : today;
+    const timelineLeft = LABEL_WIDTH + 16;
+    const todayOffset = diffInDays(rangeStart, clampedToday) * dayWidth + dayWidth / 2;
+    const preferredViewportPosition = scrollContainer.clientWidth * 0.42;
+
+    scrollContainer.scrollLeft = Math.max(0, timelineLeft + todayOffset - preferredViewportPosition);
+    hasAutoScrolledRef.current = true;
+  }, [dayWidth, rangeEnd, rangeStart, today]);
+
+  useEffect(() => {
+    try {
+      const rawCollaborators = window.localStorage.getItem(COLLABORATOR_FILTERS_STORAGE_KEY);
+      const parsedCollaborators = rawCollaborators ? JSON.parse(rawCollaborators) : null;
+      if (Array.isArray(parsedCollaborators)) {
+        const selectedIds = parsedCollaborators.filter((id): id is string => typeof id === "string");
+        const next = selectedIds.filter((id) => collaboratorIds.includes(id));
+        setSelectedCollaboratorIds(next);
+      } else {
+        setSelectedCollaboratorIds(collaboratorIds);
+      }
+    } catch {
+      setSelectedCollaboratorIds(collaboratorIds);
+    }
+
+    try {
+      const rawClients = window.localStorage.getItem(CLIENT_FILTERS_STORAGE_KEY);
+      const parsedClients = rawClients ? JSON.parse(rawClients) : null;
+      if (Array.isArray(parsedClients)) {
+        const selectedKeys = parsedClients.filter((key): key is string => typeof key === "string");
+        const hasStaleKeys = selectedKeys.some((key) => !validClientKeys.includes(key));
+        const next = hasStaleKeys ? validClientKeys : selectedKeys.filter((key) => validClientKeys.includes(key));
+        setSelectedClients(next);
+        window.localStorage.setItem(CLIENT_FILTERS_STORAGE_KEY, JSON.stringify(next));
+      } else {
+        setSelectedClients(validClientKeys);
+      }
+    } catch {
+      setSelectedClients(validClientKeys);
+    }
+
+    try {
+      const rawCompanies = window.localStorage.getItem(COMPANY_FILTERS_STORAGE_KEY);
+      const parsedCompanies = rawCompanies ? JSON.parse(rawCompanies) : null;
+      if (Array.isArray(parsedCompanies)) {
+        const selectedKeys = parsedCompanies.filter((key): key is string => typeof key === "string");
+        const hasStaleKeys = selectedKeys.some((key) => !validCompanyKeys.includes(key));
+        const next = hasStaleKeys ? validCompanyKeys : selectedKeys.filter((key) => validCompanyKeys.includes(key));
+        setSelectedCompanies(next);
+        window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(next));
+      } else {
+        setSelectedCompanies(validCompanyKeys);
+      }
+    } catch {
+      setSelectedCompanies(validCompanyKeys);
+    }
+  }, [collaborators, collaboratorIds, validClientKeys, validCompanyKeys]);
 
   const openTask = (taskId: string) => {
     if (dragChangedTaskRef.current === taskId) {
@@ -402,6 +441,27 @@ export function PublicGanttBoard({
           dueDate: newTaskDueDate,
         });
         const defaults = getDefaultTaskDates();
+        const assigneeCompany = collaborators
+          .find((collaborator) => collaborator.id === newTaskAssigneeId)
+          ?.company?.trim();
+        setSelectedCollaboratorIds((current) => {
+          const next = current.includes(newTaskAssigneeId) ? current : [...current, newTaskAssigneeId];
+          window.localStorage.setItem(COLLABORATOR_FILTERS_STORAGE_KEY, JSON.stringify(next));
+          return next;
+        });
+        setSelectedClients((current) => {
+          const next = current.includes(newTaskClient) ? current : [...current, newTaskClient];
+          window.localStorage.setItem(CLIENT_FILTERS_STORAGE_KEY, JSON.stringify(next));
+          return next;
+        });
+        if (canManageUsers) {
+          const companyKey = assigneeCompany || NO_COMPANY_KEY;
+          setSelectedCompanies((current) => {
+            const next = current.includes(companyKey) ? current : [...current, companyKey];
+            window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(next));
+            return next;
+          });
+        }
         setNewTaskTitle("");
         setNewTaskClient(availableClientValues[0] ?? "SCIO");
         setNewTaskStartDate(defaults.startDate);
@@ -431,10 +491,23 @@ export function PublicGanttBoard({
 
     startTransition(async () => {
       try {
-        await createCollaboratorFromGanttAction({
+        const result = await createCollaboratorFromGanttAction({
           name: cleanName,
           company: newCollaboratorCompany.trim() || undefined,
           primaryClient: newCollaboratorPrimaryClient,
+        });
+        if (result?.collaboratorId) {
+          setSelectedCollaboratorIds((current) => {
+            const next = current.includes(result.collaboratorId) ? current : [...current, result.collaboratorId];
+            window.localStorage.setItem(COLLABORATOR_FILTERS_STORAGE_KEY, JSON.stringify(next));
+            return next;
+          });
+        }
+        const companyKey = newCollaboratorCompany.trim() || NO_COMPANY_KEY;
+        setSelectedCompanies((current) => {
+          const next = current.includes(companyKey) ? current : [...current, companyKey];
+          window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(next));
+          return next;
         });
         setNewCollaboratorName("");
         setNewCollaboratorCompany("");
@@ -484,9 +557,10 @@ export function PublicGanttBoard({
     }))
     .filter((group) => group.collaborators.length > 0);
   const noCompanyCollaborators = visibleCollaborators.filter((collaborator) => !(collaborator.company?.trim()));
+  const firstVisibleCollaboratorId = visibleCollaborators[0]?.id ?? null;
 
   return (
-    <div className="space-y-3">
+    <div ref={boardRef} className="space-y-3">
       {dragMessage ? (
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
           {isPending ? (
@@ -511,8 +585,11 @@ export function PublicGanttBoard({
       ) : null}
       {collaboratorGroups.map((group) => (
         <section key={group.company} className="space-y-3">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2">
-            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa interna</p>
+          <div
+            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+            style={{ width: `${LABEL_WIDTH}px` }}
+          >
+            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
             <h3 className="text-base font-semibold text-slate-900">{group.label}</h3>
           </div>
           {group.collaborators.map((collaborator) => {
@@ -534,7 +611,7 @@ export function PublicGanttBoard({
         return (
           <article key={collaborator.id} className="flex items-stretch gap-4">
             <div
-              className="flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5"
+              className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
               style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
             >
               <div className="flex items-center gap-3">
@@ -581,12 +658,14 @@ export function PublicGanttBoard({
 
               {today.getTime() >= rangeStart.getTime() && today.getTime() <= rangeEnd.getTime() ? (
                 <div
-                  className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-slate-950/75"
+                  className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-rose-300/90"
                   style={{ left: `${diffInDays(rangeStart, today) * dayWidth + dayWidth / 2}px` }}
                 >
-                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-slate-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-white">
-                    Hoy
-                  </span>
+                  {collaborator.id === firstVisibleCollaboratorId ? (
+                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-rose-700">
+                      Hoy
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -810,8 +889,11 @@ export function PublicGanttBoard({
       ))}
       {noCompanyCollaborators.length > 0 ? (
         <section className="space-y-3">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2">
-            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa interna</p>
+          <div
+            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+            style={{ width: `${LABEL_WIDTH}px` }}
+          >
+            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
             <h3 className="text-base font-semibold text-slate-900">Sin empresa</h3>
           </div>
           {noCompanyCollaborators.map((collaborator) => {
@@ -833,7 +915,7 @@ export function PublicGanttBoard({
             return (
               <article key={collaborator.id} className="flex items-stretch gap-4">
                 <div
-                  className="flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5"
+                  className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
                   style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
                 >
                   <div className="flex items-center gap-3">
@@ -880,12 +962,14 @@ export function PublicGanttBoard({
 
                   {today.getTime() >= rangeStart.getTime() && today.getTime() <= rangeEnd.getTime() ? (
                     <div
-                      className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-slate-950/75"
+                      className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-rose-300/90"
                       style={{ left: `${diffInDays(rangeStart, today) * dayWidth + dayWidth / 2}px` }}
                     >
-                      <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-slate-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-white">
-                        Hoy
-                      </span>
+                      {collaborator.id === firstVisibleCollaboratorId ? (
+                        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-rose-700">
+                          Hoy
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -1231,7 +1315,7 @@ export function PublicGanttBoard({
                 />
               </div>
               <div>
-                <label className="mb-1 block text-sm text-slate-700">Empresa interna (opcional)</label>
+                <label className="mb-1 block text-sm text-slate-700">Empresa (opcional)</label>
                 <select
                   value={newCollaboratorCompany}
                   onChange={(event) => setNewCollaboratorCompany(event.target.value)}

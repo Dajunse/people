@@ -800,9 +800,26 @@ export async function updateCompanyAction(formData: FormData) {
     throw new Error("Datos invalidos para editar empresa.");
   }
 
-  await prisma.company.update({
-    where: { id: parsed.data.companyId },
-    data: { name: parsed.data.name },
+  await prisma.$transaction(async (tx) => {
+    const company = await tx.company.findUnique({
+      where: { id: parsed.data.companyId },
+      select: { name: true },
+    });
+    if (!company) {
+      throw new Error("Empresa no encontrada.");
+    }
+
+    await tx.company.update({
+      where: { id: parsed.data.companyId },
+      data: { name: parsed.data.name },
+    });
+
+    if (company.name !== parsed.data.name) {
+      await tx.user.updateMany({
+        where: { company: company.name },
+        data: { company: parsed.data.name },
+      });
+    }
   });
 
   revalidatePath("/admin/catalogs");
@@ -913,9 +930,34 @@ export async function updateClientAction(formData: FormData) {
     throw new Error("Datos invalidos para editar cliente.");
   }
 
-  await prisma.client.update({
-    where: { id: parsed.data.clientId },
-    data: { name: parsed.data.name },
+  await prisma.$transaction(async (tx) => {
+    const client = await tx.client.findUnique({
+      where: { id: parsed.data.clientId },
+      select: { name: true },
+    });
+    if (!client) {
+      throw new Error("Cliente no encontrado.");
+    }
+
+    await tx.client.update({
+      where: { id: parsed.data.clientId },
+      data: { name: parsed.data.name },
+    });
+
+    if (client.name !== parsed.data.name) {
+      await tx.task.updateMany({
+        where: { client: client.name },
+        data: { client: parsed.data.name },
+      });
+      await tx.user.updateMany({
+        where: { primaryClient: client.name },
+        data: { primaryClient: parsed.data.name },
+      });
+      await tx.userClientAccess.updateMany({
+        where: { client: client.name },
+        data: { client: parsed.data.name },
+      });
+    }
   });
 
   revalidatePath("/admin/catalogs");
