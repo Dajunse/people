@@ -33,7 +33,6 @@ export default async function AdminUserEditPage({
         email: true,
         company: true,
         role: true,
-        primaryClient: true,
         startingRank: true,
         dashboardTone: true,
         avatarPreset: true,
@@ -116,20 +115,6 @@ export default async function AdminUserEditPage({
               >
                 <option value="COLLABORATOR">Colaborador</option>
                 <option value="MANAGER">Lider</option>
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-zinc-700">Cliente principal</label>
-              <select
-                name="primaryClient"
-                defaultValue={collaborator.primaryClient ?? clientOptions[0] ?? "SCIO"}
-                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm"
-              >
-                {clientOptions.map((client) => (
-                  <option key={client} value={client}>
-                    {taskClientLabel(client)}
-                  </option>
-                ))}
               </select>
             </div>
             <div>

@@ -41,7 +41,6 @@ const createCollaboratorFromGanttSchema = z.object({
   name: z.string().min(2),
   email: z.string().email().optional().or(z.literal("")),
   company: z.string().trim().max(80).optional().or(z.literal("")),
-  primaryClient: z.string().trim().min(1).max(80),
 });
 
 function buildInternalEmail(name: string) {
@@ -138,6 +137,24 @@ function assertManagerCompany(user: { role: Role; company: string | null }) {
   }
 }
 
+async function assertAssigneeCanReceiveClient(assigneeId: string, client: string | null) {
+  if (!client) return;
+
+  const access = await prisma.userClientAccess.findUnique({
+    where: {
+      userId_client: {
+        userId: assigneeId,
+        client,
+      },
+    },
+    select: { userId: true },
+  });
+
+  if (!access) {
+    throw new Error("El colaborador no tiene permiso para tareas de este cliente.");
+  }
+}
+
 export async function updateTaskFromGanttAction(formData: FormData) {
   const user = await requireUser();
 
@@ -228,6 +245,8 @@ export async function updateTaskFromGanttAction(formData: FormData) {
     throw new Error("Fecha estimada invalida.");
   }
 
+  await assertAssigneeCanReceiveClient(assigneeId, parsed.data.client);
+
   const nextStatus = parsed.data.status as TaskStatus;
   const now = new Date();
 
@@ -284,6 +303,7 @@ export async function shiftTaskScheduleAction(input: {
     select: {
       id: true,
       assigneeId: true,
+      client: true,
       assignee: {
         select: {
           company: true,
@@ -323,6 +343,8 @@ export async function shiftTaskScheduleAction(input: {
     }
     nextAssigneeId = assignee.id;
   }
+
+  await assertAssigneeCanReceiveClient(nextAssigneeId, task.client);
 
   await prisma.task.update({
     where: { id: task.id },
@@ -370,6 +392,8 @@ export async function createTaskFromGanttAction(input: {
   if (!assignee) {
     throw new Error("Colaborador asignado invalido.");
   }
+
+  await assertAssigneeCanReceiveClient(assignee.id, parsed.data.client);
 
   const parsedStartedAt = parseOptionalDate(parsed.data.startedAt);
   const parsedDueDate = parseOptionalDate(parsed.data.dueDate);
@@ -421,7 +445,6 @@ export async function createCollaboratorFromGanttAction(input: {
   name: string;
   email?: string;
   company?: string;
-  primaryClient: string;
 }) {
   const user = await requireUser();
 
@@ -442,7 +465,6 @@ export async function createCollaboratorFromGanttAction(input: {
       name: parsed.data.name,
       company: parsed.data.company?.trim() ? parsed.data.company.trim() : null,
       role: Role.COLLABORATOR,
-      primaryClient: parsed.data.primaryClient,
       isActive: true,
       passwordHash,
       dashboardTone: "OCEAN",
@@ -454,7 +476,6 @@ export async function createCollaboratorFromGanttAction(input: {
       email,
       company: parsed.data.company?.trim() ? parsed.data.company.trim() : null,
       role: Role.COLLABORATOR,
-      primaryClient: parsed.data.primaryClient,
       isActive: true,
       passwordHash,
       dashboardTone: "OCEAN",

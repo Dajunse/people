@@ -26,7 +26,6 @@ export default async function AdminUsersPage() {
         email: true,
         company: true,
         role: true,
-        primaryClient: true,
       },
     }),
     prisma.company.findMany({
@@ -81,16 +80,6 @@ export default async function AdminUsersPage() {
               {companies.map((company) => (
                 <option key={company.id} value={company.name}>
                   {company.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-sm text-zinc-700">Cliente principal</label>
-            <select name="primaryClient" required defaultValue={clientOptions[0] ?? "SCIO"} className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2">
-              {clientOptions.map((client) => (
-                <option key={client} value={client}>
-                  {taskClientLabel(client)}
                 </option>
               ))}
             </select>
@@ -158,9 +147,6 @@ export default async function AdminUsersPage() {
               </span>
               <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] text-zinc-600">
                 Empresa: {collaborator.company ?? "Sin empresa"}
-              </span>
-              <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] text-zinc-600">
-                Cliente: {taskClientLabel(collaborator.primaryClient)}
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <Link
