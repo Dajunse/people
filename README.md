@@ -59,3 +59,5 @@ npm run dev
 - `npm run build`
 - `npm run prisma:migrate`
 - `npm run prisma:seed`
+
+<!-- Railway redeploy marker: 2026-04-24 -->
