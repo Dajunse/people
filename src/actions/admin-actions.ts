@@ -1,13 +1,13 @@
 "use server";
 
 import bcrypt from "bcryptjs";
-import { Role, TaskClient, TaskDifficulty, TaskHistoryAction, TaskStatus } from "@prisma/client";
+import { randomInt } from "crypto";
+import { Role, TaskDifficulty, TaskHistoryAction, TaskStatus } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { AVATAR_PRESET_VALUES } from "@/lib/avatar-presets";
 import { DASHBOARD_TONE_VALUES } from "@/lib/dashboard-tones";
 import { RANK_TIER_VALUES } from "@/lib/reward-system";
-import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 import { requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -16,22 +16,60 @@ const STAFF_ROLE_VALUES = ["COLLABORATOR", "MANAGER"] as const;
 
 const collaboratorSchema = z.object({
   name: z.string().min(2),
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email().optional().or(z.literal("")),
+  company: z.string().trim().max(80).optional().or(z.literal("")),
   role: z.enum(STAFF_ROLE_VALUES).default("COLLABORATOR"),
-  primaryClient: z.enum(TASK_CLIENT_VALUES),
+  primaryClient: z.string().trim().min(1).max(80),
   dashboardTone: z.enum(DASHBOARD_TONE_VALUES),
   avatarPreset: z.enum(AVATAR_PRESET_VALUES),
   startingRank: z.enum(RANK_TIER_VALUES),
-  visibleClients: z.array(z.enum(TASK_CLIENT_VALUES)).optional(),
+  visibleClients: z.array(z.string().trim().min(1).max(80)).optional(),
 });
+
+function buildInternalEmail(name: string) {
+  const normalized = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+  const base = normalized.length > 0 ? normalized : "usuario";
+  const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+  return `${base}.${suffix}@people.local`;
+}
+
+function generateSecureTemporaryPassword(length = 16) {
+  const lower = "abcdefghijklmnopqrstuvwxyz";
+  const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const digits = "0123456789";
+  const symbols = "!@#$%^&*()-_=+[]{}";
+  const all = `${lower}${upper}${digits}${symbols}`;
+
+  const chars = [
+    lower[randomInt(lower.length)],
+    upper[randomInt(upper.length)],
+    digits[randomInt(digits.length)],
+    symbols[randomInt(symbols.length)],
+  ];
+
+  for (let index = chars.length; index < length; index += 1) {
+    chars.push(all[randomInt(all.length)]);
+  }
+
+  for (let index = chars.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(index + 1);
+    const current = chars[index];
+    chars[index] = chars[swapIndex];
+    chars[swapIndex] = current;
+  }
+
+  return chars.join("");
+}
 
 export async function createCollaboratorAction(formData: FormData) {
   await requireAdmin();
   const parsed = collaboratorSchema.safeParse({
     name: formData.get("name"),
-    email: formData.get("email"),
-    password: formData.get("password"),
+    email: formData.get("email") || undefined,
+    company: formData.get("company") || undefined,
     role: formData.get("role") || "COLLABORATOR",
     primaryClient: formData.get("primaryClient"),
     dashboardTone: formData.get("dashboardTone"),
@@ -44,13 +82,15 @@ export async function createCollaboratorAction(formData: FormData) {
     throw new Error("Payload invalido de colaborador.");
   }
 
-  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+  const email = parsed.data.email ? parsed.data.email.toLowerCase() : buildInternalEmail(parsed.data.name);
+  const passwordHash = await bcrypt.hash(generateSecureTemporaryPassword(), 12);
   const collaborator = await prisma.user.upsert({
-    where: { email: parsed.data.email.toLowerCase() },
+    where: { email },
     update: {
       name: parsed.data.name,
+      company: parsed.data.company?.trim() ? parsed.data.company.trim() : null,
       role: parsed.data.role as Role,
-      primaryClient: parsed.data.primaryClient as TaskClient,
+      primaryClient: parsed.data.primaryClient,
       isActive: true,
       passwordHash,
       dashboardTone: parsed.data.dashboardTone,
@@ -59,9 +99,10 @@ export async function createCollaboratorAction(formData: FormData) {
     },
     create: {
       name: parsed.data.name,
-      email: parsed.data.email.toLowerCase(),
+      email,
+      company: parsed.data.company?.trim() ? parsed.data.company.trim() : null,
       role: parsed.data.role as Role,
-      primaryClient: parsed.data.primaryClient as TaskClient,
+      primaryClient: parsed.data.primaryClient,
       isActive: true,
       passwordHash,
       dashboardTone: parsed.data.dashboardTone,
@@ -70,9 +111,14 @@ export async function createCollaboratorAction(formData: FormData) {
     },
   });
 
+  const activeClients = await prisma.client.findMany({
+    where: { isActive: true },
+    select: { name: true },
+    orderBy: { name: "asc" },
+  });
   const selectedClients = parsed.data.visibleClients && parsed.data.visibleClients.length > 0
     ? parsed.data.visibleClients
-    : [...TASK_CLIENT_VALUES];
+    : activeClients.map((client) => client.name);
   const allowedClients = Array.from(new Set([parsed.data.primaryClient, ...selectedClients]));
 
   await prisma.userClientAccess.deleteMany({
@@ -95,7 +141,7 @@ export async function createCollaboratorAction(formData: FormData) {
 const taskSchema = z.object({
   title: z.string().min(2),
   description: z.string().optional(),
-  client: z.enum(TASK_CLIENT_VALUES),
+  client: z.string().trim().min(1).max(80),
   dueDate: z.string().optional(),
   expectedDoneAt: z.string().optional(),
   difficulty: z.enum(["EASY", "MEDIUM", "HARD"]).default("MEDIUM"),
@@ -135,7 +181,7 @@ export async function createTaskAction(formData: FormData) {
     data: {
       title: parsed.data.title,
       description: parsed.data.description,
-      client: parsed.data.client as TaskClient,
+      client: parsed.data.client,
       dueDate,
       expectedDoneAt,
       status: TaskStatus.PENDING,
@@ -203,12 +249,13 @@ export async function updateCollaboratorAppearanceAction(formData: FormData) {
 const collaboratorProfileSchema = z.object({
   collaboratorId: z.string().min(1),
   name: z.string().min(2),
-  email: z.string().email(),
+  email: z.string().email().optional().or(z.literal("")),
+  company: z.string().trim().max(80).optional().or(z.literal("")),
   password: z.string().optional(),
   role: z.enum(STAFF_ROLE_VALUES).default("COLLABORATOR"),
-  primaryClient: z.enum(TASK_CLIENT_VALUES),
+  primaryClient: z.string().trim().min(1).max(80),
   startingRank: z.enum(RANK_TIER_VALUES),
-  visibleClients: z.array(z.enum(TASK_CLIENT_VALUES)).optional(),
+  visibleClients: z.array(z.string().trim().min(1).max(80)).optional(),
 });
 
 export async function updateCollaboratorProfileAction(formData: FormData) {
@@ -218,6 +265,7 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
     collaboratorId: formData.get("collaboratorId"),
     name: formData.get("name"),
     email: formData.get("email"),
+    company: formData.get("company") || undefined,
     password: formData.get("password") || undefined,
     role: formData.get("role") || "COLLABORATOR",
     primaryClient: formData.get("primaryClient"),
@@ -229,7 +277,22 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
     throw new Error("Payload invalido para editar colaborador.");
   }
 
-  const email = parsed.data.email.toLowerCase();
+  const cleanEmail = parsed.data.email?.trim().toLowerCase() || null;
+
+  const currentCollaborator = await prisma.user.findFirst({
+    where: {
+      id: parsed.data.collaboratorId,
+      role: { in: STAFF_ROLES },
+      isActive: true,
+    },
+    select: { id: true, email: true },
+  });
+
+  if (!currentCollaborator) {
+    throw new Error("No se encontro el colaborador para editar.");
+  }
+
+  const email = cleanEmail ?? currentCollaborator.email;
   const duplicate = await prisma.user.findFirst({
     where: {
       email,
@@ -245,15 +308,17 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
   const updateData: {
     name: string;
     email: string;
+    company: string | null;
     role: Role;
-    primaryClient: TaskClient;
+    primaryClient: string;
     startingRank: (typeof RANK_TIER_VALUES)[number];
     passwordHash?: string;
   } = {
     name: parsed.data.name,
     email,
+    company: parsed.data.company?.trim() ? parsed.data.company.trim() : null,
     role: parsed.data.role as Role,
-    primaryClient: parsed.data.primaryClient as TaskClient,
+    primaryClient: parsed.data.primaryClient,
     startingRank: parsed.data.startingRank,
   };
 
@@ -264,7 +329,7 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
     updateData.passwordHash = await bcrypt.hash(parsed.data.password, 12);
   }
 
-  const result = await prisma.user.updateMany({
+  await prisma.user.updateMany({
     where: {
       id: parsed.data.collaboratorId,
       role: { in: STAFF_ROLES },
@@ -272,10 +337,6 @@ export async function updateCollaboratorProfileAction(formData: FormData) {
     },
     data: updateData,
   });
-
-  if (result.count === 0) {
-    throw new Error("No se encontro el colaborador para editar.");
-  }
 
   const selectedClients = parsed.data.visibleClients ?? [];
   const allowedClients = Array.from(new Set([parsed.data.primaryClient, ...selectedClients]));
@@ -421,7 +482,7 @@ export async function updateTaskStatusByAdminAction(formData: FormData) {
 const updateTaskDatesByAdminSchema = z.object({
   taskId: z.string().min(1),
   assigneeId: z.string().min(1),
-  client: z.enum(TASK_CLIENT_VALUES),
+  client: z.string().trim().min(1).max(80),
   difficulty: z.enum(["EASY", "MEDIUM", "HARD"]).default("MEDIUM"),
   difficultyLabel: z.string().optional(),
   starValue: z.coerce.number().int().min(1).max(5),
@@ -460,7 +521,7 @@ export async function updateTaskDatesByAdminAction(formData: FormData) {
 
   const updateData: {
     assigneeId?: string;
-    client?: TaskClient;
+    client?: string;
     difficulty?: TaskDifficulty;
     difficultyLabel?: string | null;
     starValue?: number;
@@ -483,7 +544,7 @@ export async function updateTaskDatesByAdminAction(formData: FormData) {
   }
 
   updateData.assigneeId = assignee.id;
-  updateData.client = parsed.data.client as TaskClient;
+  updateData.client = parsed.data.client;
   updateData.difficulty = parsed.data.difficulty as TaskDifficulty;
   updateData.difficultyLabel = parsed.data.difficultyLabel || null;
   updateData.starValue = parsed.data.starValue;
@@ -655,4 +716,271 @@ export async function deleteRewardAction(formData: FormData) {
   revalidatePath("/admin/rewards");
   revalidatePath("/dashboard");
   revalidatePath("/public");
+}
+
+const companySchema = z.object({
+  name: z.string().trim().min(2).max(80),
+});
+
+export async function createCompanyAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = companySchema.safeParse({
+    name: formData.get("name"),
+  });
+
+  if (!parsed.success) {
+    throw new Error("Nombre de empresa invalido.");
+  }
+
+  await prisma.company.upsert({
+    where: { name: parsed.data.name },
+    update: { isActive: true },
+    create: { name: parsed.data.name, isActive: true },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/public/gantt");
+}
+
+const deleteCompanySchema = z.object({
+  companyId: z.string().min(1),
+});
+
+export async function deleteCompanyAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = deleteCompanySchema.safeParse({
+    companyId: formData.get("companyId"),
+  });
+  if (!parsed.success) {
+    throw new Error("Empresa invalida.");
+  }
+
+  await prisma.company.update({
+    where: { id: parsed.data.companyId },
+    data: { isActive: false },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/public/gantt");
+}
+
+export async function activateCompanyAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = deleteCompanySchema.safeParse({
+    companyId: formData.get("companyId"),
+  });
+  if (!parsed.success) {
+    throw new Error("Empresa invalida.");
+  }
+
+  await prisma.company.update({
+    where: { id: parsed.data.companyId },
+    data: { isActive: true },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/public/gantt");
+}
+
+const updateCompanySchema = z.object({
+  companyId: z.string().min(1),
+  name: z.string().trim().min(2).max(80),
+});
+
+export async function updateCompanyAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = updateCompanySchema.safeParse({
+    companyId: formData.get("companyId"),
+    name: formData.get("name"),
+  });
+  if (!parsed.success) {
+    throw new Error("Datos invalidos para editar empresa.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const company = await tx.company.findUnique({
+      where: { id: parsed.data.companyId },
+      select: { name: true },
+    });
+    if (!company) {
+      throw new Error("Empresa no encontrada.");
+    }
+
+    await tx.company.update({
+      where: { id: parsed.data.companyId },
+      data: { name: parsed.data.name },
+    });
+
+    if (company.name !== parsed.data.name) {
+      await tx.user.updateMany({
+        where: { company: company.name },
+        data: { company: parsed.data.name },
+      });
+    }
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/public/gantt");
+}
+
+export async function deleteCompanyPermanentAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = deleteCompanySchema.safeParse({
+    companyId: formData.get("companyId"),
+  });
+  if (!parsed.success) {
+    throw new Error("Empresa invalida.");
+  }
+
+  await prisma.company.delete({
+    where: { id: parsed.data.companyId },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/public/gantt");
+}
+
+const clientSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+});
+
+export async function createClientAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = clientSchema.safeParse({
+    name: formData.get("name"),
+  });
+
+  if (!parsed.success) {
+    throw new Error("Nombre de cliente invalido.");
+  }
+
+  await prisma.client.upsert({
+    where: { name: parsed.data.name },
+    update: { isActive: true },
+    create: { name: parsed.data.name, isActive: true },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/public/gantt");
+}
+
+const deleteClientSchema = z.object({
+  clientId: z.string().min(1),
+});
+
+export async function deleteClientAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = deleteClientSchema.safeParse({
+    clientId: formData.get("clientId"),
+  });
+  if (!parsed.success) {
+    throw new Error("Cliente invalido.");
+  }
+
+  await prisma.client.update({
+    where: { id: parsed.data.clientId },
+    data: { isActive: false },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/public/gantt");
+}
+
+export async function activateClientAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = deleteClientSchema.safeParse({
+    clientId: formData.get("clientId"),
+  });
+  if (!parsed.success) {
+    throw new Error("Cliente invalido.");
+  }
+
+  await prisma.client.update({
+    where: { id: parsed.data.clientId },
+    data: { isActive: true },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/public/gantt");
+}
+
+const updateClientSchema = z.object({
+  clientId: z.string().min(1),
+  name: z.string().trim().min(2).max(80),
+});
+
+export async function updateClientAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = updateClientSchema.safeParse({
+    clientId: formData.get("clientId"),
+    name: formData.get("name"),
+  });
+  if (!parsed.success) {
+    throw new Error("Datos invalidos para editar cliente.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const client = await tx.client.findUnique({
+      where: { id: parsed.data.clientId },
+      select: { name: true },
+    });
+    if (!client) {
+      throw new Error("Cliente no encontrado.");
+    }
+
+    await tx.client.update({
+      where: { id: parsed.data.clientId },
+      data: { name: parsed.data.name },
+    });
+
+    if (client.name !== parsed.data.name) {
+      await tx.task.updateMany({
+        where: { client: client.name },
+        data: { client: parsed.data.name },
+      });
+      await tx.user.updateMany({
+        where: { primaryClient: client.name },
+        data: { primaryClient: parsed.data.name },
+      });
+      await tx.userClientAccess.updateMany({
+        where: { client: client.name },
+        data: { client: parsed.data.name },
+      });
+    }
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/public/gantt");
+}
+
+export async function deleteClientPermanentAction(formData: FormData) {
+  await requireAdmin();
+  const parsed = deleteClientSchema.safeParse({
+    clientId: formData.get("clientId"),
+  });
+  if (!parsed.success) {
+    throw new Error("Cliente invalido.");
+  }
+
+  await prisma.client.delete({
+    where: { id: parsed.data.clientId },
+  });
+
+  revalidatePath("/admin/catalogs");
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/tasks");
+  revalidatePath("/public/gantt");
 }

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Role, TaskClient, TaskStatus } from "@prisma/client";
+import { Role, TaskStatus } from "@prisma/client";
 import { GanttTaskEditor } from "@/components/gantt-task-editor";
 import { PublicGanttBoard } from "@/components/public-gantt-board";
 import { getAvatarPreset } from "@/lib/avatar-presets";
@@ -8,6 +8,7 @@ import {
   LABEL_WIDTH,
   ZOOM_OPTIONS,
   addDays,
+  addMonths,
   diffInDays,
   firstValue,
   getIsoWeekInfo,
@@ -25,6 +26,7 @@ export const dynamic = "force-dynamic";
 
 const ZOOM_SEQUENCE = ["1w", "2w", "3w", "1m", "2m", "3m", "4m", "5m", "6m"] as const;
 const STAFF_ROLES: Role[] = [Role.COLLABORATOR, Role.MANAGER];
+const PLANNED_RANGE_MONTH_PADDING = 3;
 
 export default async function PublicGanttPage({
   searchParams,
@@ -72,23 +74,41 @@ export default async function PublicGanttPage({
 
   const currentUser = await getCurrentUser();
   const isManager = currentUser?.role === "MANAGER";
+  const viewerCompany = currentUser?.company?.trim() || null;
   const canCreateTasks = currentUser?.role === "ADMIN" || currentUser?.role === "MANAGER";
+  const [activeClients, activeCompanies] = await Promise.all([
+    prisma.client.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { name: true },
+    }),
+    prisma.company.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { name: true },
+    }),
+  ]);
+  const activeClientValues = activeClients.length > 0 ? activeClients.map((client) => client.name) : [...TASK_CLIENT_VALUES];
+  const activeCompanyValues = activeCompanies.map((company) => company.name);
+
   const viewerAllowedClients = currentUser && currentUser.role !== "ADMIN"
     ? await prisma.userClientAccess.findMany({
         where: { userId: currentUser.id },
         select: { client: true },
       })
     : [];
-  const allowedClientValues: TaskClient[] | null = currentUser && currentUser.role !== "ADMIN"
-    ? viewerAllowedClients.map((entry) => entry.client as TaskClient)
+  const allowedClientValues: string[] | null = currentUser && currentUser.role !== "ADMIN"
+    ? viewerAllowedClients.map((entry) => entry.client).filter((client) => activeClientValues.includes(client))
     : null;
   const taskClientWhere = allowedClientValues
     ? { client: { in: allowedClientValues } }
     : {};
   const collaboratorWhere = currentUser?.role === "ADMIN"
     ? { role: { in: STAFF_ROLES }, isActive: true }
-    : currentUser?.role === "MANAGER" && currentUser.primaryClient
-      ? { role: { in: STAFF_ROLES }, isActive: true, primaryClient: currentUser.primaryClient }
+    : currentUser
+      ? viewerCompany
+        ? { role: { in: STAFF_ROLES }, isActive: true, company: viewerCompany }
+        : { id: currentUser.id, role: { in: STAFF_ROLES }, isActive: true }
       : { role: Role.COLLABORATOR, isActive: true };
 
   const [collaborators, selectedTask] = await Promise.all([
@@ -98,6 +118,7 @@ export default async function PublicGanttPage({
       select: {
         id: true,
         name: true,
+        company: true,
         primaryClient: true,
         dashboardTone: true,
         avatarPreset: true,
@@ -142,6 +163,7 @@ export default async function PublicGanttPage({
                 id: true,
                 name: true,
                 primaryClient: true,
+                company: true,
               },
             },
           },
@@ -152,7 +174,7 @@ export default async function PublicGanttPage({
     ? !allowedClientValues || (selectedTask.client ? allowedClientValues.includes(selectedTask.client) : false)
     : false;
   const selectedTaskManageableByManager =
-    isManager && currentUser?.primaryClient && selectedTask?.assignee.primaryClient === currentUser.primaryClient;
+    isManager && viewerCompany && selectedTask?.assignee.company === viewerCompany;
 
   const scheduledEntries = collaborators.flatMap((collaborator) =>
     collaborator.assignedTasks
@@ -167,16 +189,20 @@ export default async function PublicGanttPage({
   );
 
   const today = startOfDay(new Date());
-  const rangeStart = scheduledEntries.length
-    ? addDays(
-        scheduledEntries.reduce(
-          (min, entry) => (entry.schedule.start.getTime() < min.getTime() ? entry.schedule.start : min),
-          scheduledEntries[0].schedule.start,
-        ),
-        -1,
+  const plannedStart = scheduledEntries.length
+    ? scheduledEntries.reduce(
+        (min, entry) => (entry.schedule.start.getTime() < min.getTime() ? entry.schedule.start : min),
+        scheduledEntries[0].schedule.start,
       )
-    : addDays(today, -2);
-  const rangeEnd = addDays(rangeStart, zoom.days - 1);
+    : today;
+  const plannedEnd = scheduledEntries.length
+    ? scheduledEntries.reduce(
+        (max, entry) => (entry.schedule.end.getTime() > max.getTime() ? entry.schedule.end : max),
+        scheduledEntries[0].schedule.end,
+      )
+    : today;
+  const rangeStart = addMonths(plannedStart, -PLANNED_RANGE_MONTH_PADDING);
+  const rangeEnd = addMonths(plannedEnd, PLANNED_RANGE_MONTH_PADDING);
 
   const dayCount = Math.max(diffInDays(rangeStart, rangeEnd) + 1, 1);
   const days = Array.from({ length: dayCount }, (_, index) => addDays(rangeStart, index));
@@ -206,6 +232,8 @@ export default async function PublicGanttPage({
     return {
       id: collaborator.id,
       name: collaborator.name,
+      company: collaborator.company,
+      primaryClient: collaborator.primaryClient,
       dashboardTone: collaborator.dashboardTone,
       avatarEmoji: avatar.emoji,
       avatarSwatch: avatar.swatch,
@@ -218,6 +246,14 @@ export default async function PublicGanttPage({
       })),
     };
   }).filter((collaborator) => canCreateTasks || !allowedClientValues || collaborator.assignedTasks.length > 0);
+  const availableCompanyValues = Array.from(
+    new Set([
+      ...activeCompanyValues,
+      ...boardCollaborators
+        .map((collaborator) => collaborator.company?.trim() || "")
+        .filter((company) => company.length > 0),
+    ]),
+  ).sort((a, b) => a.localeCompare(b));
 
   return (
     <main className="min-h-screen bg-[#f4f6f8] px-6 py-8 text-slate-900">
@@ -306,10 +342,16 @@ export default async function PublicGanttPage({
           </div>
         </section>
 
-        <section className="overflow-x-auto rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]">
+        <section
+          data-gantt-scroll-container
+          className="overflow-x-auto rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]"
+        >
           <div style={{ minWidth: `${timelineWidth + LABEL_WIDTH + 24}px` }}>
             <div className="mb-4 flex items-end gap-4 border-b border-slate-200 pb-4">
-              <div className="shrink-0" style={{ width: `${LABEL_WIDTH}px` }} />
+              <div
+                className="sticky left-0 z-30 shrink-0 bg-white"
+                style={{ width: `${LABEL_WIDTH}px` }}
+              />
               <div className="shrink-0" style={{ width: `${timelineWidth}px` }}>
                 <div
                   className="grid border-b border-slate-200 pb-2"
@@ -348,7 +390,7 @@ export default async function PublicGanttPage({
             </div>
 
             <PublicGanttBoard
-              key={`board-${zoomKey}-${selectedTaskId || "none"}-${createTaskModal ? "create" : "normal"}-${createCollaboratorModal ? "create-collaborator" : "normal-collaborator"}-${filtersModal ? "filters" : "no-filters"}`}
+              key={`board-${zoomKey}-${selectedTaskId || "none"}`}
               collaborators={boardCollaborators}
               currentUserId={currentUser?.id}
               currentUserRole={currentUser?.role}
@@ -362,7 +404,8 @@ export default async function PublicGanttPage({
               initialCreateModalOpen={createTaskModal}
               initialCreateCollaboratorModalOpen={createCollaboratorModal}
               initialFiltersModalOpen={filtersModal}
-              allowedClientValues={allowedClientValues ?? [...TASK_CLIENT_VALUES]}
+              allowedClientValues={allowedClientValues ?? activeClientValues}
+              availableCompanyValues={availableCompanyValues}
             />
 
             {collaborators.length === 0 ? (
@@ -387,6 +430,7 @@ export default async function PublicGanttPage({
               task={selectedTask}
               collaborators={boardCollaborators.map((collaborator) => ({ id: collaborator.id, name: collaborator.name }))}
               zoomKey={zoomKey}
+              availableClientValues={activeClientValues}
             />
           </div>
         </div>

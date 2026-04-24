@@ -51,7 +51,7 @@ export default async function AdminTasksPage({
     : "ALL";
   const assigneeFilter = firstValue(resolvedSearchParams.assigneeId) ?? "ALL";
 
-  const [collaborators, taskCounts, tasks] = await Promise.all([
+  const [collaborators, taskCounts, tasks, activeClients] = await Promise.all([
     prisma.user.findMany({
       where: { role: { in: [Role.COLLABORATOR, Role.MANAGER] }, isActive: true },
       orderBy: { name: "asc" },
@@ -86,7 +86,13 @@ export default async function AdminTasksPage({
       orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
       take: 60,
     }),
+    prisma.client.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { name: true },
+    }),
   ]);
+  const clientOptions = activeClients.length > 0 ? activeClients.map((client) => client.name) : [...TASK_CLIENT_VALUES];
 
   const countsByStatus = new Map(
     taskCounts.map((item) => [item.status, item._count._all]),
@@ -155,8 +161,8 @@ export default async function AdminTasksPage({
             </div>
             <div>
               <label className="mb-1 block text-sm text-zinc-700">Cliente</label>
-              <select name="client" defaultValue="SCIO" className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2">
-                {TASK_CLIENT_VALUES.map((client) => (
+              <select name="client" defaultValue={clientOptions[0] ?? "SCIO"} className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2">
+                {clientOptions.map((client) => (
                   <option key={client} value={client}>
                     {taskClientLabel(client)}
                   </option>
@@ -351,7 +357,7 @@ export default async function AdminTasksPage({
                     defaultValue={task.client ?? "SCIO"}
                     className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm"
                   >
-                    {TASK_CLIENT_VALUES.map((client) => (
+                    {clientOptions.map((client) => (
                       <option key={client} value={client}>
                         {taskClientLabel(client)}
                       </option>

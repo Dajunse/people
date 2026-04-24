@@ -1,8 +1,8 @@
 "use client";
 
-import { TaskClient, TaskStatus } from "@prisma/client";
+import { TaskStatus } from "@prisma/client";
 import { useRouter } from "next/navigation";
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   createCollaboratorFromGanttAction,
   createTaskFromGanttAction,
@@ -29,7 +29,7 @@ type GanttTask = {
   id: string;
   title: string;
   description: string | null;
-  client: TaskClient | null;
+  client: string | null;
   status: TaskStatus;
   assigneeId: string;
   createdAt: string;
@@ -41,6 +41,8 @@ type GanttTask = {
 type GanttCollaborator = {
   id: string;
   name: string;
+  company: string | null;
+  primaryClient: string | null;
   dashboardTone: string | null;
   avatarEmoji: string;
   avatarSwatch: string;
@@ -80,8 +82,10 @@ function statusLabelFor(status: TaskStatus) {
 }
 
 const NO_CLIENT_KEY = "__NO_CLIENT__";
+const NO_COMPANY_KEY = "__NO_COMPANY__";
 const COLLABORATOR_FILTERS_STORAGE_KEY = "people_gantt_filters_collaborators";
 const CLIENT_FILTERS_STORAGE_KEY = "people_gantt_filters_clients";
+const COMPANY_FILTERS_STORAGE_KEY = "people_gantt_filters_companies";
 const DRAG_ACTIVATION_PX = 4;
 
 function toInputDate(date: Date) {
@@ -144,6 +148,7 @@ export function PublicGanttBoard({
   initialCreateCollaboratorModalOpen,
   initialFiltersModalOpen,
   allowedClientValues,
+  availableCompanyValues,
 }: {
   collaborators: GanttCollaborator[];
   currentUserId?: string;
@@ -158,17 +163,23 @@ export function PublicGanttBoard({
   initialCreateModalOpen?: boolean;
   initialCreateCollaboratorModalOpen?: boolean;
   initialFiltersModalOpen?: boolean;
-  allowedClientValues: TaskClient[];
+  allowedClientValues: string[];
+  availableCompanyValues: string[];
 }) {
   const router = useRouter();
   const canPlan = currentUserRole === "ADMIN" || currentUserRole === "MANAGER";
   const canManageUsers = currentUserRole === "ADMIN";
   const canViewNoClientOption = canManageUsers;
-  const collaboratorIds = collaborators.map((collaborator) => collaborator.id);
   const availableClientValues = allowedClientValues;
-  const validClientKeys = canViewNoClientOption
-    ? [...availableClientValues, NO_CLIENT_KEY]
-    : [...availableClientValues];
+  const collaboratorIds = useMemo(() => collaborators.map((collaborator) => collaborator.id), [collaborators]);
+  const validClientKeys = useMemo(
+    () => (canViewNoClientOption ? [...availableClientValues, NO_CLIENT_KEY] : [...availableClientValues]),
+    [availableClientValues, canViewNoClientOption],
+  );
+  const validCompanyKeys = useMemo(
+    () => (canManageUsers ? [...availableCompanyValues, NO_COMPANY_KEY] : []),
+    [availableCompanyValues, canManageUsers],
+  );
   const [overrides, setOverrides] = useState<Record<string, TaskOverride>>({});
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [hoverAssigneeId, setHoverAssigneeId] = useState<string | null>(null);
@@ -179,43 +190,107 @@ export function PublicGanttBoard({
   );
   const [isFiltersModalOpen, setIsFiltersModalOpen] = useState(Boolean(initialFiltersModalOpen));
   const [newTaskTitle, setNewTaskTitle] = useState("");
-  const [newTaskClient, setNewTaskClient] = useState<TaskClient>(availableClientValues[0] ?? "SCIO");
+  const [newTaskClient, setNewTaskClient] = useState<string>(availableClientValues[0] ?? "SCIO");
   const [newTaskAssigneeId, setNewTaskAssigneeId] = useState(collaborators[0]?.id ?? "");
   const [newTaskStartDate, setNewTaskStartDate] = useState(() => getDefaultTaskDates().startDate);
   const [newTaskDueDate, setNewTaskDueDate] = useState(() => getDefaultTaskDates().dueDate);
   const [newCollaboratorName, setNewCollaboratorName] = useState("");
-  const [newCollaboratorEmail, setNewCollaboratorEmail] = useState("");
-  const [newCollaboratorPassword, setNewCollaboratorPassword] = useState("");
-  const [selectedCollaboratorIds, setSelectedCollaboratorIds] = useState<string[]>(() => {
-    if (typeof window === "undefined") return collaboratorIds;
-    try {
-      const raw = window.localStorage.getItem(COLLABORATOR_FILTERS_STORAGE_KEY);
-      if (!raw) return collaboratorIds;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return collaboratorIds;
-      return parsed.filter((id): id is string => typeof id === "string");
-    } catch {
-      return collaboratorIds;
-    }
-  });
-  const [selectedClients, setSelectedClients] = useState<string[]>(() => {
-    if (typeof window === "undefined") return validClientKeys;
-    try {
-      const raw = window.localStorage.getItem(CLIENT_FILTERS_STORAGE_KEY);
-      if (!raw) return validClientKeys;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return validClientKeys;
-      return parsed.filter((key): key is string => typeof key === "string");
-    } catch {
-      return validClientKeys;
-    }
-  });
+  const [newCollaboratorCompany, setNewCollaboratorCompany] = useState("");
+  const [newCollaboratorPrimaryClient, setNewCollaboratorPrimaryClient] = useState<string>(
+    availableClientValues[0] ?? "SCIO",
+  );
+  const [selectedCollaboratorIds, setSelectedCollaboratorIds] = useState<string[]>(collaboratorIds);
+  const [selectedClients, setSelectedClients] = useState<string[]>(validClientKeys);
+  const [selectedCompanies, setSelectedCompanies] = useState<string[]>(validCompanyKeys);
   const [isPending, startTransition] = useTransition();
+  const boardRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const dragChangedTaskRef = useRef<string | null>(null);
-  const today = startOfDay(new Date());
-  const rangeStart = new Date(rangeStartIso);
-  const rangeEnd = new Date(rangeEndIso);
+  const hasAutoScrolledRef = useRef(false);
+  const today = useMemo(() => startOfDay(new Date()), []);
+  const rangeStart = useMemo(() => new Date(rangeStartIso), [rangeStartIso]);
+  const rangeEnd = useMemo(() => new Date(rangeEndIso), [rangeEndIso]);
+
+  useEffect(() => {
+    setIsCreateModalOpen(Boolean(initialCreateModalOpen));
+  }, [initialCreateModalOpen]);
+
+  useEffect(() => {
+    setIsCreateCollaboratorModalOpen(Boolean(initialCreateCollaboratorModalOpen));
+  }, [initialCreateCollaboratorModalOpen]);
+
+  useEffect(() => {
+    setIsFiltersModalOpen(Boolean(initialFiltersModalOpen));
+  }, [initialFiltersModalOpen]);
+
+  useEffect(() => {
+    if (hasAutoScrolledRef.current) return;
+
+    const scrollContainer = boardRef.current?.closest<HTMLElement>("[data-gantt-scroll-container]");
+    if (!scrollContainer) return;
+
+    const clampedToday =
+      today.getTime() < rangeStart.getTime()
+        ? rangeStart
+        : today.getTime() > rangeEnd.getTime()
+          ? rangeEnd
+          : today;
+    const timelineLeft = LABEL_WIDTH + 16;
+    const todayOffset = diffInDays(rangeStart, clampedToday) * dayWidth + dayWidth / 2;
+    const preferredViewportPosition = scrollContainer.clientWidth * 0.42;
+
+    scrollContainer.scrollLeft = Math.max(0, timelineLeft + todayOffset - preferredViewportPosition);
+    hasAutoScrolledRef.current = true;
+  }, [dayWidth, rangeEnd, rangeStart, today]);
+
+  useEffect(() => {
+    try {
+      const rawCollaborators = window.localStorage.getItem(COLLABORATOR_FILTERS_STORAGE_KEY);
+      const parsedCollaborators = rawCollaborators ? JSON.parse(rawCollaborators) : null;
+      if (Array.isArray(parsedCollaborators)) {
+        const selectedIds = parsedCollaborators.filter((id): id is string => typeof id === "string");
+        const next = selectedIds.filter((id) => collaboratorIds.includes(id));
+        setSelectedCollaboratorIds(next);
+      } else {
+        setSelectedCollaboratorIds(collaboratorIds);
+      }
+    } catch {
+      setSelectedCollaboratorIds(collaboratorIds);
+    }
+
+    try {
+      const rawClients = window.localStorage.getItem(CLIENT_FILTERS_STORAGE_KEY);
+      const parsedClients = rawClients ? JSON.parse(rawClients) : null;
+      if (Array.isArray(parsedClients)) {
+        const selectedKeys = parsedClients.filter((key): key is string => typeof key === "string");
+        const hasStaleKeys = selectedKeys.some((key) => !validClientKeys.includes(key));
+        const next = hasStaleKeys ? validClientKeys : selectedKeys.filter((key) => validClientKeys.includes(key));
+        setSelectedClients(next);
+        window.localStorage.setItem(CLIENT_FILTERS_STORAGE_KEY, JSON.stringify(next));
+      } else {
+        setSelectedClients(validClientKeys);
+      }
+    } catch {
+      setSelectedClients(validClientKeys);
+    }
+
+    try {
+      const rawCompanies = window.localStorage.getItem(COMPANY_FILTERS_STORAGE_KEY);
+      const parsedCompanies = rawCompanies ? JSON.parse(rawCompanies) : null;
+      if (Array.isArray(parsedCompanies)) {
+        const selectedKeys = parsedCompanies.filter((key): key is string => typeof key === "string");
+        const hasStaleKeys = selectedKeys.some((key) => !validCompanyKeys.includes(key));
+        const next = hasStaleKeys ? validCompanyKeys : selectedKeys.filter((key) => validCompanyKeys.includes(key));
+        setSelectedCompanies(next);
+        window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(next));
+      } else {
+        setSelectedCompanies(validCompanyKeys);
+      }
+    } catch {
+      setSelectedCompanies(validCompanyKeys);
+    }
+  }, [collaborators, collaboratorIds, validClientKeys, validCompanyKeys]);
+
   const openTask = (taskId: string) => {
     if (dragChangedTaskRef.current === taskId) {
       dragChangedTaskRef.current = null;
@@ -314,8 +389,21 @@ export function PublicGanttBoard({
     });
   };
 
+  const toggleCompanyFilter = (companyKey: string) => {
+    setSelectedCompanies((current) => {
+      const next = current.includes(companyKey)
+        ? current.filter((key) => key !== companyKey)
+        : [...current, companyKey];
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
   const activeCollaboratorFilter = selectedCollaboratorIds.filter((id) => collaboratorIds.includes(id));
   const activeClientFilter = selectedClients.filter((key) => validClientKeys.includes(key));
+  const activeCompanyFilter = selectedCompanies.filter((key) => validCompanyKeys.includes(key));
 
   const handleCreateTask = () => {
     if (!canPlan) return;
@@ -353,6 +441,27 @@ export function PublicGanttBoard({
           dueDate: newTaskDueDate,
         });
         const defaults = getDefaultTaskDates();
+        const assigneeCompany = collaborators
+          .find((collaborator) => collaborator.id === newTaskAssigneeId)
+          ?.company?.trim();
+        setSelectedCollaboratorIds((current) => {
+          const next = current.includes(newTaskAssigneeId) ? current : [...current, newTaskAssigneeId];
+          window.localStorage.setItem(COLLABORATOR_FILTERS_STORAGE_KEY, JSON.stringify(next));
+          return next;
+        });
+        setSelectedClients((current) => {
+          const next = current.includes(newTaskClient) ? current : [...current, newTaskClient];
+          window.localStorage.setItem(CLIENT_FILTERS_STORAGE_KEY, JSON.stringify(next));
+          return next;
+        });
+        if (canManageUsers) {
+          const companyKey = assigneeCompany || NO_COMPANY_KEY;
+          setSelectedCompanies((current) => {
+            const next = current.includes(companyKey) ? current : [...current, companyKey];
+            window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(next));
+            return next;
+          });
+        }
         setNewTaskTitle("");
         setNewTaskClient(availableClientValues[0] ?? "SCIO");
         setNewTaskStartDate(defaults.startDate);
@@ -373,17 +482,8 @@ export function PublicGanttBoard({
     if (!canManageUsers) return;
 
     const cleanName = newCollaboratorName.trim();
-    const cleanEmail = newCollaboratorEmail.trim().toLowerCase();
     if (cleanName.length < 2) {
       setDragMessage({ type: "error", text: "El nombre debe tener al menos 2 caracteres." });
-      return;
-    }
-    if (!cleanEmail) {
-      setDragMessage({ type: "error", text: "Ingresa un correo valido." });
-      return;
-    }
-    if (newCollaboratorPassword.length < 8) {
-      setDragMessage({ type: "error", text: "La contrasena debe tener al menos 8 caracteres." });
       return;
     }
 
@@ -391,14 +491,27 @@ export function PublicGanttBoard({
 
     startTransition(async () => {
       try {
-        await createCollaboratorFromGanttAction({
+        const result = await createCollaboratorFromGanttAction({
           name: cleanName,
-          email: cleanEmail,
-          password: newCollaboratorPassword,
+          company: newCollaboratorCompany.trim() || undefined,
+          primaryClient: newCollaboratorPrimaryClient,
+        });
+        if (result?.collaboratorId) {
+          setSelectedCollaboratorIds((current) => {
+            const next = current.includes(result.collaboratorId) ? current : [...current, result.collaboratorId];
+            window.localStorage.setItem(COLLABORATOR_FILTERS_STORAGE_KEY, JSON.stringify(next));
+            return next;
+          });
+        }
+        const companyKey = newCollaboratorCompany.trim() || NO_COMPANY_KEY;
+        setSelectedCompanies((current) => {
+          const next = current.includes(companyKey) ? current : [...current, companyKey];
+          window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(next));
+          return next;
         });
         setNewCollaboratorName("");
-        setNewCollaboratorEmail("");
-        setNewCollaboratorPassword("");
+        setNewCollaboratorCompany("");
+        setNewCollaboratorPrimaryClient(availableClientValues[0] ?? "SCIO");
         closeCreateCollaboratorModal();
         setDragMessage({ type: "success", text: "Colaborador creado correctamente." });
         router.refresh();
@@ -413,6 +526,14 @@ export function PublicGanttBoard({
 
   const visibleCollaborators = collaborators
     .filter((collaborator) => activeCollaboratorFilter.includes(collaborator.id))
+    .filter((collaborator) => {
+      if (!canManageUsers) return true;
+      const companyName = collaborator.company?.trim() || "";
+      if (!companyName) {
+        return activeCompanyFilter.includes(NO_COMPANY_KEY);
+      }
+      return activeCompanyFilter.includes(companyName);
+    })
     .map((collaborator) => ({
       ...collaborator,
       assignedTasks: collaborator.assignedTasks.filter((task) => {
@@ -422,9 +543,24 @@ export function PublicGanttBoard({
         return activeClientFilter.includes(task.client);
       }),
     }));
+  const collaboratorGroups = Array.from(
+    new Set(
+      visibleCollaborators
+        .map((collaborator) => collaborator.company?.trim() || "")
+        .filter((company) => company.length > 0),
+    ),
+  )
+    .map((company) => ({
+      company,
+      label: company,
+      collaborators: visibleCollaborators.filter((collaborator) => (collaborator.company?.trim() || "") === company),
+    }))
+    .filter((group) => group.collaborators.length > 0);
+  const noCompanyCollaborators = visibleCollaborators.filter((collaborator) => !(collaborator.company?.trim()));
+  const firstVisibleCollaboratorId = visibleCollaborators[0]?.id ?? null;
 
   return (
-    <div className="space-y-3">
+    <div ref={boardRef} className="space-y-3">
       {dragMessage ? (
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
           {isPending ? (
@@ -447,7 +583,16 @@ export function PublicGanttBoard({
           No hay resultados con los filtros seleccionados.
         </div>
       ) : null}
-      {visibleCollaborators.map((collaborator) => {
+      {collaboratorGroups.map((group) => (
+        <section key={group.company} className="space-y-3">
+          <div
+            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+            style={{ width: `${LABEL_WIDTH}px` }}
+          >
+            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
+            <h3 className="text-base font-semibold text-slate-900">{group.label}</h3>
+          </div>
+          {group.collaborators.map((collaborator) => {
         const barSwatch = getBarSwatch(collaborator.dashboardTone);
         const canOpenModal = currentUserId
           ? currentUserRole === "ADMIN" || currentUserRole === "MANAGER" || currentUserId === collaborator.id
@@ -466,7 +611,7 @@ export function PublicGanttBoard({
         return (
           <article key={collaborator.id} className="flex items-stretch gap-4">
             <div
-              className="flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5"
+              className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
               style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
             >
               <div className="flex items-center gap-3">
@@ -475,6 +620,7 @@ export function PublicGanttBoard({
                 </span>
                 <div>
                   <p className="text-lg font-semibold text-slate-900">{collaborator.name}</p>
+                  <p className="text-xs text-slate-500">{collaborator.company ?? "Sin empresa"}</p>
                 </div>
               </div>
             </div>
@@ -512,12 +658,14 @@ export function PublicGanttBoard({
 
               {today.getTime() >= rangeStart.getTime() && today.getTime() <= rangeEnd.getTime() ? (
                 <div
-                  className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-slate-950/75"
+                  className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-rose-300/90"
                   style={{ left: `${diffInDays(rangeStart, today) * dayWidth + dayWidth / 2}px` }}
                 >
-                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-slate-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-white">
-                    Hoy
-                  </span>
+                  {collaborator.id === firstVisibleCollaboratorId ? (
+                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-rose-700">
+                      Hoy
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -736,7 +884,287 @@ export function PublicGanttBoard({
             </div>
           </article>
         );
-      })}
+          })}
+        </section>
+      ))}
+      {noCompanyCollaborators.length > 0 ? (
+        <section className="space-y-3">
+          <div
+            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+            style={{ width: `${LABEL_WIDTH}px` }}
+          >
+            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
+            <h3 className="text-base font-semibold text-slate-900">Sin empresa</h3>
+          </div>
+          {noCompanyCollaborators.map((collaborator) => {
+            const barSwatch = getBarSwatch(collaborator.dashboardTone);
+            const canOpenModal = currentUserId
+              ? currentUserRole === "ADMIN" || currentUserRole === "MANAGER" || currentUserId === collaborator.id
+              : false;
+            const taskEntries = collaborator.assignedTasks.flatMap((task) => {
+              const schedule = parseTaskSchedule(task, overrides[task.id]);
+              return schedule ? [{ task, schedule }] : [];
+            });
+            const scheduledTasks = assignLanes(taskEntries);
+            const laneCount = Math.max(
+              scheduledTasks.reduce((max, item) => Math.max(max, item.laneIndex + 1), 0),
+              1,
+            );
+            const rowHeight = laneCount * LANE_HEIGHT;
+
+            return (
+              <article key={collaborator.id} className="flex items-stretch gap-4">
+                <div
+                  className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+                  style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className={`inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-gradient-to-br text-2xl shadow-sm ${collaborator.avatarSwatch}`}>
+                      {collaborator.avatarEmoji}
+                    </span>
+                    <div>
+                      <p className="text-lg font-semibold text-slate-900">{collaborator.name}</p>
+                      <p className="text-xs text-slate-500">Sin empresa</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  data-gantt-collaborator-id={collaborator.id}
+                  className={cn(
+                    "relative shrink-0 overflow-visible rounded-[28px] border border-slate-200 bg-slate-50",
+                    activeDragId && hoverAssigneeId === collaborator.id ? "ring-2 ring-slate-300/80 ring-offset-2" : "",
+                  )}
+                  style={{ width: `${timelineWidth}px`, height: `${rowHeight}px` }}
+                >
+                  <div
+                    className="grid h-full"
+                    style={{
+                      gridTemplateColumns: `repeat(${dayCount}, ${dayWidth}px)`,
+                      gridTemplateRows: `repeat(${laneCount}, ${LANE_HEIGHT}px)`,
+                    }}
+                  >
+                    {Array.from({ length: laneCount }).map((_, laneIndex) =>
+                      Array.from({ length: dayCount }).map((__, dayIndex) => {
+                        const day = addDays(rangeStart, dayIndex);
+                        return (
+                          <div
+                            key={`${collaborator.id}-${laneIndex}-${day.toISOString()}`}
+                            className={cn(
+                              "border-l border-t border-slate-200 first:border-l-0",
+                              isWeekend(day) ? "bg-slate-100/60" : "bg-white/55",
+                            )}
+                          />
+                        );
+                      }),
+                    )}
+                  </div>
+
+                  {today.getTime() >= rangeStart.getTime() && today.getTime() <= rangeEnd.getTime() ? (
+                    <div
+                      className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-rose-300/90"
+                      style={{ left: `${diffInDays(rangeStart, today) * dayWidth + dayWidth / 2}px` }}
+                    >
+                      {collaborator.id === firstVisibleCollaboratorId ? (
+                        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-rose-700">
+                          Hoy
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {scheduledTasks.length > 0 ? (
+                    scheduledTasks.map(({ task, schedule, laneIndex }) => {
+                      if (schedule.end.getTime() < rangeStart.getTime() || schedule.start.getTime() > rangeEnd.getTime()) {
+                        return null;
+                      }
+
+                      const visibleStart = schedule.start.getTime() < rangeStart.getTime() ? rangeStart : schedule.start;
+                      const visibleEnd = schedule.end.getTime() > rangeEnd.getTime() ? rangeEnd : schedule.end;
+                      const visibleStartOffset = diffInDays(rangeStart, visibleStart);
+                      const visibleEndOffset = diffInDays(rangeStart, visibleEnd);
+                      const left = visibleStartOffset * dayWidth + 8;
+                      const width = Math.max((visibleEndOffset - visibleStartOffset + 1) * dayWidth - 14, 32);
+                      const top = laneIndex * LANE_HEIGHT + (LANE_HEIGHT - BAR_HEIGHT) / 2;
+                      const statusLabel = statusLabelFor(task.status);
+                      const tone = getTaskTone(task, schedule, today);
+                      const clientTone = getClientTone(task.client);
+                      const isEditableTask = Boolean(canOpenModal);
+                      const isDragging = activeDragId === task.id;
+
+                      const sharedClassName = `group absolute flex h-[40px] items-center overflow-hidden rounded-[20px] border bg-gradient-to-r px-3 py-1 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
+                      const sharedStyle = {
+                        left: `${left}px`,
+                        top: `${top}px`,
+                        width: `${width}px`,
+                        minHeight: `${BAR_HEIGHT}px`,
+                      };
+
+                      const barContent = (
+                        <>
+                          <span className={cn("mr-2 inline-flex h-2.5 w-2.5 shrink-0 rounded-full", barSwatch)} />
+                          <div className="min-w-0">
+                            <p className={`truncate text-sm font-semibold ${tone.textClassName}`}>{task.title}</p>
+                            <p className="truncate text-[11px] text-white/82">
+                              {statusLabel}
+                              {task.client ? ` · ${taskClientLabel(task.client)}` : ""}
+                            </p>
+                          </div>
+                          <span className={cn("ml-2 inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium", clientTone)}>
+                            {taskClientLabel(task.client)}
+                          </span>
+                        </>
+                      );
+
+                      const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+                        if (!canPlan) return;
+                        dragRef.current = {
+                          taskId: task.id,
+                          originX: event.clientX,
+                          start: schedule.start,
+                          end: schedule.end,
+                          dayDelta: 0,
+                          hasMoved: false,
+                          assigneeId: collaborator.id,
+                          targetAssigneeId: collaborator.id,
+                        };
+                        setActiveDragId(task.id);
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                      };
+
+                      const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+                        const drag = dragRef.current;
+                        if (!drag || drag.taskId !== task.id) return;
+
+                        const pixelDelta = event.clientX - drag.originX;
+                        if (!drag.hasMoved && Math.abs(pixelDelta) >= DRAG_ACTIVATION_PX) {
+                          drag.hasMoved = true;
+                        }
+
+                        const hoveredAssigneeId = resolveCollaboratorIdFromPoint(event.clientX, event.clientY);
+                        if (hoveredAssigneeId && hoveredAssigneeId !== drag.targetAssigneeId) {
+                          drag.targetAssigneeId = hoveredAssigneeId;
+                          setHoverAssigneeId(hoveredAssigneeId);
+                          dragChangedTaskRef.current = task.id;
+                        }
+
+                        const nextDayDelta = Math.round(pixelDelta / dayWidth);
+                        if (nextDayDelta === drag.dayDelta) return;
+
+                        drag.dayDelta = nextDayDelta;
+                        const nextStart = addDays(drag.start, nextDayDelta);
+                        const nextEnd = addDays(drag.end, nextDayDelta);
+                        dragChangedTaskRef.current = task.id;
+                        setOverrides((current) => ({
+                          ...current,
+                          [task.id]: {
+                            startedAt: nextStart.toISOString(),
+                            dueDate: nextEnd.toISOString(),
+                          },
+                        }));
+                      };
+
+                      const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+                        const drag = dragRef.current;
+                        if (!drag || drag.taskId !== task.id) return;
+
+                        event.currentTarget.releasePointerCapture(event.pointerId);
+                        dragRef.current = null;
+                        setActiveDragId(null);
+                        setHoverAssigneeId(null);
+                        const assigneeChanged = drag.targetAssigneeId !== drag.assigneeId;
+                        const wasClick = !drag.hasMoved && !assigneeChanged;
+
+                        if (wasClick) {
+                          openTask(task.id);
+                          return;
+                        }
+
+                        if (drag.dayDelta === 0 && !assigneeChanged) {
+                          dragChangedTaskRef.current = null;
+                          setOverrides((current) => {
+                            const next = { ...current };
+                            delete next[task.id];
+                            return next;
+                          });
+                          return;
+                        }
+
+                        const previousOverride = overrides[task.id];
+                        const nextStart = addDays(drag.start, drag.dayDelta);
+                        const nextEnd = addDays(drag.end, drag.dayDelta);
+                        persistShift(
+                          task.id,
+                          nextStart,
+                          nextEnd,
+                          previousOverride,
+                          assigneeChanged ? drag.targetAssigneeId : undefined,
+                        );
+                      };
+
+                      const handlePointerCancel = () => {
+                        dragChangedTaskRef.current = null;
+                        setHoverAssigneeId(null);
+                        setOverrides((current) => {
+                          const next = { ...current };
+                          delete next[task.id];
+                          return next;
+                        });
+                        dragRef.current = null;
+                        setActiveDragId(null);
+                      };
+
+                      if (isEditableTask) {
+                        if (canPlan) {
+                          return (
+                            <div
+                              key={task.id}
+                              className={`${sharedClassName} touch-none ${isPending && activeDragId === task.id ? "pointer-events-none opacity-80" : "cursor-grab active:cursor-grabbing"}`}
+                              style={sharedStyle}
+                              onPointerDown={handlePointerDown}
+                              onPointerMove={handlePointerMove}
+                              onPointerUp={handlePointerUp}
+                              onPointerCancel={handlePointerCancel}
+                            >
+                              {barContent}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div key={task.id} className={sharedClassName} style={sharedStyle}>
+                            <button
+                              type="button"
+                              className="absolute inset-0 z-10 rounded-[20px] text-left"
+                              onClick={() => openTask(task.id)}
+                              aria-label={`Abrir tarea ${task.title}`}
+                            >
+                              <span className="sr-only">Abrir tarea</span>
+                            </button>
+                            {barContent}
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div key={task.id} className={sharedClassName} style={sharedStyle}>
+                          {barContent}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center px-6">
+                      <p className="rounded-full border border-dashed border-slate-300 bg-white/80 px-4 py-2 text-sm text-slate-500">
+                        Sin tareas con fechas para esta persona.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      ) : null}
 
       {canPlan && isCreateModalOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/30 px-4">
@@ -778,7 +1206,7 @@ export function PublicGanttBoard({
                   <label className="mb-1 block text-sm text-slate-700">Cliente</label>
                   <select
                     value={newTaskClient}
-                    onChange={(event) => setNewTaskClient(event.target.value as TaskClient)}
+                    onChange={(event) => setNewTaskClient(event.target.value)}
                     className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
                   >
                   {availableClientValues.map((client) => (
@@ -887,24 +1315,33 @@ export function PublicGanttBoard({
                 />
               </div>
               <div>
-                <label className="mb-1 block text-sm text-slate-700">Correo</label>
-                <input
-                  type="email"
-                  value={newCollaboratorEmail}
-                  onChange={(event) => setNewCollaboratorEmail(event.target.value)}
+                <label className="mb-1 block text-sm text-slate-700">Empresa (opcional)</label>
+                <select
+                  value={newCollaboratorCompany}
+                  onChange={(event) => setNewCollaboratorCompany(event.target.value)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
-                  placeholder="ana@empresa.com"
-                />
+                >
+                  <option value="">Sin empresa</option>
+                  {availableCompanyValues.map((company) => (
+                    <option key={company} value={company}>
+                      {company}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
-                <label className="mb-1 block text-sm text-slate-700">Contrasena temporal</label>
-                <input
-                  type="password"
-                  value={newCollaboratorPassword}
-                  onChange={(event) => setNewCollaboratorPassword(event.target.value)}
+                <label className="mb-1 block text-sm text-slate-700">Cliente principal</label>
+                <select
+                  value={newCollaboratorPrimaryClient}
+                  onChange={(event) => setNewCollaboratorPrimaryClient(event.target.value)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
-                  placeholder="Minimo 8 caracteres"
-                />
+                >
+                  {availableClientValues.map((client) => (
+                    <option key={client} value={client}>
+                      {taskClientLabel(client)}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -951,7 +1388,7 @@ export function PublicGanttBoard({
               </button>
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div className={`mt-4 grid gap-4 ${canManageUsers ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
               <div className="rounded-2xl border border-slate-200 p-3">
                 <div className="mb-3 flex items-center justify-between">
                   <p className="text-sm font-medium text-slate-900">Colaboradores</p>
@@ -1001,7 +1438,7 @@ export function PublicGanttBoard({
 
               <div className="rounded-2xl border border-slate-200 p-3">
                 <div className="mb-3 flex items-center justify-between">
-                  <p className="text-sm font-medium text-slate-900">Empresas</p>
+                  <p className="text-sm font-medium text-slate-900">Clientes</p>
                   <div className="flex items-center gap-2 text-xs">
                     <button
                       type="button"
@@ -1013,7 +1450,7 @@ export function PublicGanttBoard({
                       }}
                       className="text-slate-600 hover:text-slate-900"
                     >
-                      Todas
+                      Todos
                     </button>
                     <button
                       type="button"
@@ -1025,7 +1462,7 @@ export function PublicGanttBoard({
                       }}
                       className="text-slate-600 hover:text-slate-900"
                     >
-                      Ninguna
+                      Ninguno
                     </button>
                   </div>
                 </div>
@@ -1052,6 +1489,60 @@ export function PublicGanttBoard({
                   ) : null}
                 </div>
               </div>
+
+              {canManageUsers ? (
+                <div className="rounded-2xl border border-slate-200 p-3">
+                  <div className="mb-3 flex items-center justify-between">
+                    <p className="text-sm font-medium text-slate-900">Empresas</p>
+                    <div className="flex items-center gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCompanies(validCompanyKeys);
+                          if (typeof window !== "undefined") {
+                            window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify(validCompanyKeys));
+                          }
+                        }}
+                        className="text-slate-600 hover:text-slate-900"
+                      >
+                        Todas
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCompanies([]);
+                          if (typeof window !== "undefined") {
+                            window.localStorage.setItem(COMPANY_FILTERS_STORAGE_KEY, JSON.stringify([]));
+                          }
+                        }}
+                        className="text-slate-600 hover:text-slate-900"
+                      >
+                        Ninguna
+                      </button>
+                    </div>
+                  </div>
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {availableCompanyValues.map((company) => (
+                      <label key={company} className="flex items-center gap-2 rounded-xl border border-slate-200 px-2.5 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={activeCompanyFilter.includes(company)}
+                          onChange={() => toggleCompanyFilter(company)}
+                        />
+                        <span>{company}</span>
+                      </label>
+                    ))}
+                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-2.5 py-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={activeCompanyFilter.includes(NO_COMPANY_KEY)}
+                        onChange={() => toggleCompanyFilter(NO_COMPANY_KEY)}
+                      />
+                      <span>Sin empresa</span>
+                    </label>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
           </section>

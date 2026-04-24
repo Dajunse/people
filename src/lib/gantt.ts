@@ -55,6 +55,12 @@ export function addDays(date: Date, amount: number) {
   return next;
 }
 
+export function addMonths(date: Date, amount: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + amount);
+  return next;
+}
+
 export function diffInDays(start: Date, end: Date) {
   return Math.round((startOfDay(end).getTime() - startOfDay(start).getTime()) / DAY_MS);
 }

@@ -66,15 +66,6 @@ enum TaskDifficulty {
   HARD
 }
 
-enum TaskClient {
-  SCIO
-  MAQUEX
-  HULMEC
-  BLAIR
-  NEWELL
-  ORBIT
-}
-
 enum TaskHistoryAction {
   CREATED
   STARTED
@@ -89,7 +80,8 @@ model User {
   email         String        @unique
   passwordHash  String
   role          Role          @default(COLLABORATOR)
-  primaryClient TaskClient?
+  company       String?
+  primaryClient String?
   dashboardTone DashboardTone @default(OCEAN)
   avatarPreset  AvatarPreset  @default(ROBOT)
   startingRank  RankTier      @default(IRON)
@@ -105,7 +97,7 @@ model User {
 
 model UserClientAccess {
   userId String
-  client TaskClient
+  client String
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([userId, client])
@@ -116,7 +108,7 @@ model Task {
   id           String        @id @default(cuid())
   title        String
   description  String?
-  client       TaskClient?
+  client       String?
   status       TaskStatus    @default(PENDING)
   difficulty   TaskDifficulty @default(MEDIUM)
   difficultyLabel String?
@@ -181,4 +173,20 @@ model Reward {
   updatedAt   DateTime @updatedAt
 
   @@index([isActive, minRank])
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Client {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

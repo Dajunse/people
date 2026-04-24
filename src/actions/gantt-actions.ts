@@ -1,12 +1,12 @@
 "use server";
 
 import bcrypt from "bcryptjs";
-import { Role, TaskClient, TaskDifficulty, TaskHistoryAction, TaskStatus } from "@prisma/client";
+import { randomInt } from "crypto";
+import { Role, TaskDifficulty, TaskHistoryAction, TaskStatus } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 
 const STAFF_ROLES: Role[] = [Role.COLLABORATOR, Role.MANAGER];
 
@@ -14,7 +14,7 @@ const updateTaskFromGanttSchema = z.object({
   taskId: z.string().min(1),
   title: z.string().min(2),
   description: z.string().optional(),
-  client: z.enum(TASK_CLIENT_VALUES),
+  client: z.string().trim().min(1).max(80),
   status: z.enum(["PENDING", "IN_PROGRESS", "ALMOST_DONE", "COMPLETED"]),
   assigneeId: z.string().min(1),
   startedAt: z.string().optional(),
@@ -31,7 +31,7 @@ const shiftTaskScheduleSchema = z.object({
 
 const createTaskFromGanttSchema = z.object({
   title: z.string().min(2),
-  client: z.enum(TASK_CLIENT_VALUES),
+  client: z.string().trim().min(1).max(80),
   assigneeId: z.string().min(1),
   startedAt: z.string().optional(),
   dueDate: z.string().optional(),
@@ -39,9 +39,48 @@ const createTaskFromGanttSchema = z.object({
 
 const createCollaboratorFromGanttSchema = z.object({
   name: z.string().min(2),
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email().optional().or(z.literal("")),
+  company: z.string().trim().max(80).optional().or(z.literal("")),
+  primaryClient: z.string().trim().min(1).max(80),
 });
+
+function buildInternalEmail(name: string) {
+  const normalized = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+  const base = normalized.length > 0 ? normalized : "usuario";
+  const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+  return `${base}.${suffix}@people.local`;
+}
+
+function generateSecureTemporaryPassword(length = 16) {
+  const lower = "abcdefghijklmnopqrstuvwxyz";
+  const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const digits = "0123456789";
+  const symbols = "!@#$%^&*()-_=+[]{}";
+  const all = `${lower}${upper}${digits}${symbols}`;
+
+  const chars = [
+    lower[randomInt(lower.length)],
+    upper[randomInt(upper.length)],
+    digits[randomInt(digits.length)],
+    symbols[randomInt(symbols.length)],
+  ];
+
+  for (let index = chars.length; index < length; index += 1) {
+    chars.push(all[randomInt(all.length)]);
+  }
+
+  for (let index = chars.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(index + 1);
+    const current = chars[index];
+    chars[index] = chars[swapIndex];
+    chars[swapIndex] = current;
+  }
+
+  return chars.join("");
+}
 
 function startOfDay(date: Date) {
   const next = new Date(date);
@@ -92,10 +131,10 @@ function parseOptionalDate(value?: string) {
   return parsed;
 }
 
-function assertManagerPrimaryClient(user: { role: Role; primaryClient: TaskClient | null }) {
+function assertManagerCompany(user: { role: Role; company: string | null }) {
   if (user.role !== Role.MANAGER) return;
-  if (!user.primaryClient) {
-    throw new Error("El lider no tiene empresa principal configurada.");
+  if (!user.company?.trim()) {
+    throw new Error("El lider no tiene empresa interna configurada.");
   }
 }
 
@@ -129,7 +168,7 @@ export async function updateTaskFromGanttAction(formData: FormData) {
       completedAt: true,
       assignee: {
         select: {
-          primaryClient: true,
+          company: true,
         },
       },
     },
@@ -139,18 +178,14 @@ export async function updateTaskFromGanttAction(formData: FormData) {
     throw new Error("Tarea no encontrada.");
   }
 
-  assertManagerPrimaryClient(user);
+  assertManagerCompany(user);
   const managerCanEditTeamTask =
     user.role === Role.MANAGER &&
-    user.primaryClient &&
-    task.assignee.primaryClient === user.primaryClient;
+    user.company?.trim() &&
+    task.assignee.company === user.company.trim();
   const canEdit = user.role === Role.ADMIN || task.assigneeId === user.id || Boolean(managerCanEditTeamTask);
   if (!canEdit) {
     throw new Error("No tienes permiso para editar esta tarea.");
-  }
-
-  if (user.role === Role.MANAGER && parsed.data.client !== user.primaryClient) {
-    throw new Error("Solo puedes gestionar tareas de tu empresa.");
   }
 
   if (user.role === Role.COLLABORATOR && parsed.data.assigneeId !== task.assigneeId) {
@@ -168,7 +203,7 @@ export async function updateTaskFromGanttAction(formData: FormData) {
           id: parsed.data.assigneeId,
           role: { in: STAFF_ROLES },
           isActive: true,
-          primaryClient: user.primaryClient,
+          company: user.company?.trim() || "",
         },
         select: { id: true },
       });
@@ -201,7 +236,7 @@ export async function updateTaskFromGanttAction(formData: FormData) {
     data: {
       title: parsed.data.title,
       description: parsed.data.description || null,
-      client: parsed.data.client as TaskClient,
+      client: parsed.data.client,
       status: nextStatus,
       assigneeId,
       startedAt,
@@ -233,7 +268,7 @@ export async function shiftTaskScheduleAction(input: {
   assigneeId?: string;
 }) {
   const user = await requireUser();
-  assertManagerPrimaryClient(user);
+  assertManagerCompany(user);
   const canShift = user.role === Role.ADMIN || user.role === Role.MANAGER;
   if (!canShift) {
     throw new Error("No tienes permiso para reorganizar la linea del tiempo.");
@@ -251,7 +286,7 @@ export async function shiftTaskScheduleAction(input: {
       assigneeId: true,
       assignee: {
         select: {
-          primaryClient: true,
+          company: true,
         },
       },
     },
@@ -260,7 +295,7 @@ export async function shiftTaskScheduleAction(input: {
   if (!task) {
     throw new Error("Tarea no encontrada.");
   }
-  if (user.role === Role.MANAGER && task.assignee.primaryClient !== user.primaryClient) {
+  if (user.role === Role.MANAGER && task.assignee.company !== user.company?.trim()) {
     throw new Error("Solo puedes mover tareas de colegas de tu empresa.");
   }
 
@@ -278,7 +313,7 @@ export async function shiftTaskScheduleAction(input: {
         id: parsed.data.assigneeId,
         role: { in: STAFF_ROLES },
         isActive: true,
-        ...(user.role === Role.MANAGER ? { primaryClient: user.primaryClient } : {}),
+        ...(user.role === Role.MANAGER ? { company: user.company?.trim() || "" } : {}),
       },
       select: { id: true },
     });
@@ -306,13 +341,13 @@ export async function shiftTaskScheduleAction(input: {
 
 export async function createTaskFromGanttAction(input: {
   title: string;
-  client: TaskClient;
+  client: string;
   assigneeId: string;
   startedAt?: string;
   dueDate?: string;
 }) {
   const user = await requireUser();
-  assertManagerPrimaryClient(user);
+  assertManagerCompany(user);
   const canCreate = user.role === Role.ADMIN || user.role === Role.MANAGER;
   if (!canCreate) {
     throw new Error("No tienes permiso para crear tareas desde el Gantt.");
@@ -322,18 +357,14 @@ export async function createTaskFromGanttAction(input: {
   if (!parsed.success) {
     throw new Error("Payload invalido para crear la tarea desde Gantt.");
   }
-  if (user.role === Role.MANAGER && parsed.data.client !== user.primaryClient) {
-    throw new Error("Solo puedes crear tareas para tu empresa.");
-  }
-
   const assignee = await prisma.user.findFirst({
     where: {
       id: parsed.data.assigneeId,
       role: { in: STAFF_ROLES },
       isActive: true,
-      ...(user.role === Role.MANAGER ? { primaryClient: user.primaryClient } : {}),
+      ...(user.role === Role.MANAGER ? { company: user.company?.trim() || "" } : {}),
     },
-    select: { id: true, primaryClient: true },
+    select: { id: true },
   });
 
   if (!assignee) {
@@ -388,8 +419,9 @@ export async function createTaskFromGanttAction(input: {
 
 export async function createCollaboratorFromGanttAction(input: {
   name: string;
-  email: string;
-  password: string;
+  email?: string;
+  company?: string;
+  primaryClient: string;
 }) {
   const user = await requireUser();
 
@@ -402,13 +434,15 @@ export async function createCollaboratorFromGanttAction(input: {
     throw new Error("Payload invalido para crear colaborador desde Gantt.");
   }
 
-  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+  const email = parsed.data.email ? parsed.data.email.toLowerCase() : buildInternalEmail(parsed.data.name);
+  const passwordHash = await bcrypt.hash(generateSecureTemporaryPassword(), 12);
   const collaborator = await prisma.user.upsert({
-    where: { email: parsed.data.email.toLowerCase() },
+    where: { email },
     update: {
       name: parsed.data.name,
+      company: parsed.data.company?.trim() ? parsed.data.company.trim() : null,
       role: Role.COLLABORATOR,
-      primaryClient: "SCIO",
+      primaryClient: parsed.data.primaryClient,
       isActive: true,
       passwordHash,
       dashboardTone: "OCEAN",
@@ -417,9 +451,10 @@ export async function createCollaboratorFromGanttAction(input: {
     },
     create: {
       name: parsed.data.name,
-      email: parsed.data.email.toLowerCase(),
+      email,
+      company: parsed.data.company?.trim() ? parsed.data.company.trim() : null,
       role: Role.COLLABORATOR,
-      primaryClient: "SCIO",
+      primaryClient: parsed.data.primaryClient,
       isActive: true,
       passwordHash,
       dashboardTone: "OCEAN",
@@ -432,8 +467,14 @@ export async function createCollaboratorFromGanttAction(input: {
     where: { userId: collaborator.id },
   });
   if (existingClientAccess === 0) {
+    const activeClients = await prisma.client.findMany({
+      where: { isActive: true },
+      select: { name: true },
+      orderBy: { name: "asc" },
+    });
+    const clientNames = activeClients.map((client) => client.name);
     await prisma.userClientAccess.createMany({
-      data: TASK_CLIENT_VALUES.map((client) => ({
+      data: clientNames.map((client) => ({
         userId: collaborator.id,
         client,
       })),
@@ -445,4 +486,6 @@ export async function createCollaboratorFromGanttAction(input: {
   revalidatePath("/admin/tasks");
   revalidatePath("/public");
   revalidatePath("/public/gantt");
+
+  return { collaboratorId: collaborator.id };
 }

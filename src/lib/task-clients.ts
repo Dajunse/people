@@ -7,7 +7,9 @@ export const TASK_CLIENT_VALUES = [
   "ORBIT",
 ] as const;
 
-export const TASK_CLIENT_LABELS: Record<(typeof TASK_CLIENT_VALUES)[number], string> = {
+export type TaskClientValue = (typeof TASK_CLIENT_VALUES)[number];
+
+export const TASK_CLIENT_LABELS: Record<TaskClientValue, string> = {
   SCIO: "SCIO",
   MAQUEX: "MAQUEX",
   HULMEC: "HULMEC",

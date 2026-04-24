@@ -1,4 +1,4 @@
-import { Role, TaskClient, TaskStatus } from "@prisma/client";
+import { Role, TaskStatus } from "@prisma/client";
 
 export function roleLabel(role: Role) {
   if (role === Role.ADMIN) return "Admin";
@@ -21,7 +21,7 @@ export function taskStatusLabel(status: TaskStatus) {
   }
 }
 
-export function taskClientLabel(client: TaskClient | null | undefined) {
+export function taskClientLabel(client: string | null | undefined) {
   if (!client) {
     return "Sin cliente";
   }
