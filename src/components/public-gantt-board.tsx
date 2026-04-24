@@ -42,10 +42,10 @@ type GanttCollaborator = {
   id: string;
   name: string;
   company: string | null;
-  primaryClient: string | null;
   dashboardTone: string | null;
   avatarEmoji: string;
   avatarSwatch: string;
+  visibleClients: string[];
   assignedTasks: GanttTask[];
 };
 
@@ -196,9 +196,6 @@ export function PublicGanttBoard({
   const [newTaskDueDate, setNewTaskDueDate] = useState(() => getDefaultTaskDates().dueDate);
   const [newCollaboratorName, setNewCollaboratorName] = useState("");
   const [newCollaboratorCompany, setNewCollaboratorCompany] = useState("");
-  const [newCollaboratorPrimaryClient, setNewCollaboratorPrimaryClient] = useState<string>(
-    availableClientValues[0] ?? "SCIO",
-  );
   const [selectedCollaboratorIds, setSelectedCollaboratorIds] = useState<string[]>(collaboratorIds);
   const [selectedClients, setSelectedClients] = useState<string[]>(validClientKeys);
   const [selectedCompanies, setSelectedCompanies] = useState<string[]>(validCompanyKeys);
@@ -404,6 +401,15 @@ export function PublicGanttBoard({
   const activeCollaboratorFilter = selectedCollaboratorIds.filter((id) => collaboratorIds.includes(id));
   const activeClientFilter = selectedClients.filter((key) => validClientKeys.includes(key));
   const activeCompanyFilter = selectedCompanies.filter((key) => validCompanyKeys.includes(key));
+  const taskAssignableCollaborators = useMemo(
+    () => collaborators.filter((collaborator) => collaborator.visibleClients.includes(newTaskClient)),
+    [collaborators, newTaskClient],
+  );
+
+  useEffect(() => {
+    if (taskAssignableCollaborators.some((collaborator) => collaborator.id === newTaskAssigneeId)) return;
+    setNewTaskAssigneeId(taskAssignableCollaborators[0]?.id ?? "");
+  }, [newTaskAssigneeId, taskAssignableCollaborators]);
 
   const handleCreateTask = () => {
     if (!canPlan) return;
@@ -494,7 +500,6 @@ export function PublicGanttBoard({
         const result = await createCollaboratorFromGanttAction({
           name: cleanName,
           company: newCollaboratorCompany.trim() || undefined,
-          primaryClient: newCollaboratorPrimaryClient,
         });
         if (result?.collaboratorId) {
           setSelectedCollaboratorIds((current) => {
@@ -511,7 +516,6 @@ export function PublicGanttBoard({
         });
         setNewCollaboratorName("");
         setNewCollaboratorCompany("");
-        setNewCollaboratorPrimaryClient(availableClientValues[0] ?? "SCIO");
         closeCreateCollaboratorModal();
         setDragMessage({ type: "success", text: "Colaborador creado correctamente." });
         router.refresh();
@@ -579,14 +583,14 @@ export function PublicGanttBoard({
         </div>
       ) : null}
       {visibleCollaborators.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-3 py-6 text-center text-xs text-slate-500">
           No hay resultados con los filtros seleccionados.
         </div>
       ) : null}
       {collaboratorGroups.map((group) => (
         <section key={group.company} className="space-y-3">
           <div
-            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-1.5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
             style={{ width: `${LABEL_WIDTH}px` }}
           >
             <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
@@ -609,13 +613,13 @@ export function PublicGanttBoard({
         const rowHeight = laneCount * LANE_HEIGHT;
 
         return (
-          <article key={collaborator.id} className="flex items-stretch gap-4">
+          <article key={collaborator.id} className="flex items-stretch gap-3">
             <div
-              className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+              className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[22px] border border-slate-200 bg-white px-3 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
               style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
             >
-              <div className="flex items-center gap-3">
-                <span className={`inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-gradient-to-br text-2xl shadow-sm ${collaborator.avatarSwatch}`}>
+              <div className="flex items-center gap-2.5">
+                <span className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-gradient-to-br text-xl shadow-sm ${collaborator.avatarSwatch}`}>
                   {collaborator.avatarEmoji}
                 </span>
                 <div>
@@ -628,7 +632,7 @@ export function PublicGanttBoard({
             <div
               data-gantt-collaborator-id={collaborator.id}
               className={cn(
-                "relative shrink-0 overflow-visible rounded-[28px] border border-slate-200 bg-slate-50",
+                "relative shrink-0 overflow-visible rounded-[22px] border border-slate-200 bg-slate-50",
                 activeDragId && hoverAssigneeId === collaborator.id ? "ring-2 ring-slate-300/80 ring-offset-2" : "",
               )}
               style={{ width: `${timelineWidth}px`, height: `${rowHeight}px` }}
@@ -686,7 +690,7 @@ export function PublicGanttBoard({
                   const clientTone = getClientTone(task.client);
                   const isEditableTask = Boolean(canOpenModal);
                   const isDragging = activeDragId === task.id;
-                  const sharedClassName = `group absolute rounded-[20px] border bg-gradient-to-r px-3 py-3 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
+                  const sharedClassName = `group absolute rounded-[16px] border bg-gradient-to-r px-2.5 py-2 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
                   const sharedStyle = {
                     left: `${left}px`,
                     top: `${top}px`,
@@ -857,7 +861,7 @@ export function PublicGanttBoard({
                       <div key={task.id} className={sharedClassName} style={sharedStyle}>
                         <button
                           type="button"
-                          className="absolute inset-0 z-10 rounded-[20px] text-left"
+                          className="absolute inset-0 z-10 rounded-[16px] text-left"
                           onClick={() => openTask(task.id)}
                           aria-label={`Abrir tarea ${task.title}`}
                         >
@@ -875,8 +879,8 @@ export function PublicGanttBoard({
                   );
                 })
               ) : (
-                <div className="absolute inset-0 flex items-center justify-center px-6">
-                  <p className="rounded-full border border-dashed border-slate-300 bg-white/80 px-4 py-2 text-sm text-slate-500">
+                <div className="absolute inset-0 flex items-center justify-center px-4">
+                  <p className="rounded-full border border-dashed border-slate-300 bg-white/80 px-3 py-1.5 text-xs text-slate-500">
                     Sin tareas con fechas para esta persona.
                   </p>
                 </div>
@@ -890,7 +894,7 @@ export function PublicGanttBoard({
       {noCompanyCollaborators.length > 0 ? (
         <section className="space-y-3">
           <div
-            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-1.5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
             style={{ width: `${LABEL_WIDTH}px` }}
           >
             <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
@@ -913,13 +917,13 @@ export function PublicGanttBoard({
             const rowHeight = laneCount * LANE_HEIGHT;
 
             return (
-              <article key={collaborator.id} className="flex items-stretch gap-4">
+              <article key={collaborator.id} className="flex items-stretch gap-3">
                 <div
-                  className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[28px] border border-slate-200 bg-white px-5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
+                  className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[22px] border border-slate-200 bg-white px-3 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
                   style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
                 >
-                  <div className="flex items-center gap-3">
-                    <span className={`inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-gradient-to-br text-2xl shadow-sm ${collaborator.avatarSwatch}`}>
+                  <div className="flex items-center gap-2.5">
+                    <span className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-gradient-to-br text-xl shadow-sm ${collaborator.avatarSwatch}`}>
                       {collaborator.avatarEmoji}
                     </span>
                     <div>
@@ -932,7 +936,7 @@ export function PublicGanttBoard({
                 <div
                   data-gantt-collaborator-id={collaborator.id}
                   className={cn(
-                    "relative shrink-0 overflow-visible rounded-[28px] border border-slate-200 bg-slate-50",
+                    "relative shrink-0 overflow-visible rounded-[22px] border border-slate-200 bg-slate-50",
                     activeDragId && hoverAssigneeId === collaborator.id ? "ring-2 ring-slate-300/80 ring-offset-2" : "",
                   )}
                   style={{ width: `${timelineWidth}px`, height: `${rowHeight}px` }}
@@ -992,7 +996,7 @@ export function PublicGanttBoard({
                       const isEditableTask = Boolean(canOpenModal);
                       const isDragging = activeDragId === task.id;
 
-                      const sharedClassName = `group absolute flex h-[40px] items-center overflow-hidden rounded-[20px] border bg-gradient-to-r px-3 py-1 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
+                      const sharedClassName = `group absolute flex h-[34px] items-center overflow-hidden rounded-[16px] border bg-gradient-to-r px-2.5 py-1 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
                       const sharedStyle = {
                         left: `${left}px`,
                         top: `${top}px`,
@@ -1135,7 +1139,7 @@ export function PublicGanttBoard({
                           <div key={task.id} className={sharedClassName} style={sharedStyle}>
                             <button
                               type="button"
-                              className="absolute inset-0 z-10 rounded-[20px] text-left"
+                              className="absolute inset-0 z-10 rounded-[16px] text-left"
                               onClick={() => openTask(task.id)}
                               aria-label={`Abrir tarea ${task.title}`}
                             >
@@ -1153,8 +1157,8 @@ export function PublicGanttBoard({
                       );
                     })
                   ) : (
-                    <div className="absolute inset-0 flex items-center justify-center px-6">
-                      <p className="rounded-full border border-dashed border-slate-300 bg-white/80 px-4 py-2 text-sm text-slate-500">
+                    <div className="absolute inset-0 flex items-center justify-center px-4">
+                      <p className="rounded-full border border-dashed border-slate-300 bg-white/80 px-3 py-1.5 text-xs text-slate-500">
                         Sin tareas con fechas para esta persona.
                       </p>
                     </div>
@@ -1223,12 +1227,15 @@ export function PublicGanttBoard({
                     onChange={(event) => setNewTaskAssigneeId(event.target.value)}
                     className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
                   >
-                    {collaborators.map((collaborator) => (
+                    {taskAssignableCollaborators.map((collaborator) => (
                       <option key={collaborator.id} value={collaborator.id}>
                         {collaborator.name}
                       </option>
                     ))}
                   </select>
+                  {taskAssignableCollaborators.length === 0 ? (
+                    <p className="mt-1 text-xs text-rose-500">No hay colaboradores con acceso a este cliente.</p>
+                  ) : null}
                 </div>
               </div>
 
@@ -1325,20 +1332,6 @@ export function PublicGanttBoard({
                   {availableCompanyValues.map((company) => (
                     <option key={company} value={company}>
                       {company}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm text-slate-700">Cliente principal</label>
-                <select
-                  value={newCollaboratorPrimaryClient}
-                  onChange={(event) => setNewCollaboratorPrimaryClient(event.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
-                >
-                  {availableClientValues.map((client) => (
-                    <option key={client} value={client}>
-                      {taskClientLabel(client)}
                     </option>
                   ))}
                 </select>
@@ -1551,3 +1544,4 @@ export function PublicGanttBoard({
     </div>
   );
 }
+

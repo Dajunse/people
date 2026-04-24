@@ -119,9 +119,11 @@ export default async function PublicGanttPage({
         id: true,
         name: true,
         company: true,
-        primaryClient: true,
         dashboardTone: true,
         avatarPreset: true,
+        visibleClients: {
+          select: { client: true },
+        },
         assignedTasks: {
           where: {
             status: {
@@ -162,7 +164,6 @@ export default async function PublicGanttPage({
               select: {
                 id: true,
                 name: true,
-                primaryClient: true,
                 company: true,
               },
             },
@@ -233,10 +234,10 @@ export default async function PublicGanttPage({
       id: collaborator.id,
       name: collaborator.name,
       company: collaborator.company,
-      primaryClient: collaborator.primaryClient,
       dashboardTone: collaborator.dashboardTone,
       avatarEmoji: avatar.emoji,
       avatarSwatch: avatar.swatch,
+      visibleClients: collaborator.visibleClients.map((entry) => entry.client),
       assignedTasks: collaborator.assignedTasks.map((task) => ({
         ...task,
         createdAt: task.createdAt.toISOString(),
@@ -256,21 +257,21 @@ export default async function PublicGanttPage({
   ).sort((a, b) => a.localeCompare(b));
 
   return (
-    <main className="min-h-screen bg-[#f4f6f8] px-6 py-8 text-slate-900">
-      <div className="mx-auto w-full max-w-[1900px] space-y-5">
-        <header className="rounded-[32px] border border-slate-200 bg-white px-6 py-5 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.28)]">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <h1 className="text-4xl font-semibold tracking-tight text-slate-950">Linea de tiempo del equipo</h1>
+    <main className="min-h-screen bg-[#f4f6f8] px-4 py-5 text-slate-900">
+      <div className="mx-auto w-full max-w-[1900px] space-y-3">
+        <header className="rounded-[24px] border border-slate-200 bg-white px-5 py-4 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.28)]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Linea de tiempo del equipo</h1>
             <div className="flex flex-wrap gap-2">
               <Link
                 href="/public"
-                className="rounded-full border border-slate-200 bg-slate-100 px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-200"
+                className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs text-slate-700 transition hover:bg-slate-200"
               >
                 Portal publico
               </Link>
               <Link
                 href="/login"
-                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
+                className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition hover:bg-slate-100"
               >
                 Login
               </Link>
@@ -278,7 +279,7 @@ export default async function PublicGanttPage({
           </div>
         </header>
 
-        <section className="rounded-[32px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.18)]">
+        <section className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.18)]">
           <div className="grid gap-3 md:grid-cols-[1fr_auto_1fr] md:items-center">
             <div className="flex items-center gap-2">
               <p className="mr-1 text-xs uppercase tracking-[0.18em] text-slate-400">Zoom</p>
@@ -286,12 +287,12 @@ export default async function PublicGanttPage({
                 <Link
                   href={buildGanttHref(zoomInKey)}
                   aria-label="Ampliar vista de tiempo"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg text-slate-700 transition hover:bg-slate-100"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-base text-slate-700 transition hover:bg-slate-100"
                 >
                   +
                 </Link>
               ) : (
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg text-slate-300">
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-base text-slate-300">
                   +
                 </span>
               )}
@@ -299,12 +300,12 @@ export default async function PublicGanttPage({
                 <Link
                   href={buildGanttHref(zoomOutKey)}
                   aria-label="Reducir vista de tiempo"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg text-slate-700 transition hover:bg-slate-100"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-base text-slate-700 transition hover:bg-slate-100"
                 >
                   -
                 </Link>
               ) : (
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg text-slate-300">
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-base text-slate-300">
                   -
                 </span>
               )}
@@ -315,7 +316,7 @@ export default async function PublicGanttPage({
             <div className="flex items-center justify-center gap-2 md:col-start-2">
               <Link
                 href={buildGanttHref(zoomKey, { filters: true })}
-                className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
               >
                 Filtros
               </Link>
@@ -324,14 +325,14 @@ export default async function PublicGanttPage({
                   {currentUser?.role === "ADMIN" ? (
                     <Link
                       href={buildGanttHref(zoomKey, { createCollaborator: true })}
-                      className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
                     >
                       Nuevo colaborador
                     </Link>
                   ) : null}
                   <Link
                     href={buildGanttHref(zoomKey, { create: true })}
-                    className="rounded-full border border-slate-900 bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                    className="rounded-full border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800"
                   >
                     Nueva tarea
                   </Link>
@@ -344,10 +345,10 @@ export default async function PublicGanttPage({
 
         <section
           data-gantt-scroll-container
-          className="overflow-x-auto rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]"
+          className="overflow-x-auto rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]"
         >
           <div style={{ minWidth: `${timelineWidth + LABEL_WIDTH + 24}px` }}>
-            <div className="mb-4 flex items-end gap-4 border-b border-slate-200 pb-4">
+            <div className="mb-3 flex items-end gap-3 border-b border-slate-200 pb-3">
               <div
                 className="sticky left-0 z-30 shrink-0 bg-white"
                 style={{ width: `${LABEL_WIDTH}px` }}
@@ -409,7 +410,7 @@ export default async function PublicGanttPage({
             />
 
             {collaborators.length === 0 ? (
-              <div className="rounded-[28px] border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+              <div className="rounded-[22px] border border-dashed border-slate-300 bg-slate-50 px-3 py-8 text-center text-xs text-slate-500">
                 No hay colaboradores activos para mostrar en esta linea del tiempo.
               </div>
             ) : null}

@@ -81,7 +81,6 @@ model User {
   passwordHash  String
   role          Role          @default(COLLABORATOR)
   company       String?
-  primaryClient String?
   dashboardTone DashboardTone @default(OCEAN)
   avatarPreset  AvatarPreset  @default(ROBOT)
   startingRank  RankTier      @default(IRON)

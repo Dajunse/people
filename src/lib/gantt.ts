@@ -2,20 +2,20 @@ import { TaskStatus } from "@prisma/client";
 import { DASHBOARD_TONE_OPTIONS } from "@/lib/dashboard-tones";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
-export const LABEL_WIDTH = 220;
-export const LANE_HEIGHT = 58;
-export const BAR_HEIGHT = 40;
+export const LABEL_WIDTH = 190;
+export const LANE_HEIGHT = 50;
+export const BAR_HEIGHT = 34;
 
 export const ZOOM_OPTIONS = {
-  "1w": { label: "Semana", days: 7, dayWidth: 110 },
-  "2w": { label: "2 semanas", days: 14, dayWidth: 84 },
-  "3w": { label: "3 semanas", days: 21, dayWidth: 68 },
-  "1m": { label: "1 mes", days: 31, dayWidth: 56 },
-  "2m": { label: "2 meses", days: 62, dayWidth: 40 },
-  "3m": { label: "3 meses", days: 93, dayWidth: 32 },
-  "4m": { label: "4 meses", days: 124, dayWidth: 28 },
-  "5m": { label: "5 meses", days: 155, dayWidth: 24 },
-  "6m": { label: "6 meses", days: 186, dayWidth: 22 },
+  "1w": { label: "Semana", days: 7, dayWidth: 96 },
+  "2w": { label: "2 semanas", days: 14, dayWidth: 74 },
+  "3w": { label: "3 semanas", days: 21, dayWidth: 60 },
+  "1m": { label: "1 mes", days: 31, dayWidth: 50 },
+  "2m": { label: "2 meses", days: 62, dayWidth: 36 },
+  "3m": { label: "3 meses", days: 93, dayWidth: 29 },
+  "4m": { label: "4 meses", days: 124, dayWidth: 25 },
+  "5m": { label: "5 meses", days: 155, dayWidth: 22 },
+  "6m": { label: "6 meses", days: 186, dayWidth: 20 },
 } as const;
 
 const toneSwatchMap = Object.fromEntries(
