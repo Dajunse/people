@@ -3,19 +3,16 @@ import { DASHBOARD_TONE_OPTIONS } from "@/lib/dashboard-tones";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const LABEL_WIDTH = 190;
-export const LANE_HEIGHT = 50;
-export const BAR_HEIGHT = 34;
+export const LANE_HEIGHT = 40;
+export const BAR_HEIGHT = 30;
+export const TIMELINE_WIDTH = 1020;
 
 export const ZOOM_OPTIONS = {
-  "1w": { label: "Semana", days: 7, dayWidth: 96 },
-  "2w": { label: "2 semanas", days: 14, dayWidth: 74 },
-  "3w": { label: "3 semanas", days: 21, dayWidth: 60 },
-  "1m": { label: "1 mes", days: 31, dayWidth: 50 },
-  "2m": { label: "2 meses", days: 62, dayWidth: 36 },
-  "3m": { label: "3 meses", days: 93, dayWidth: 29 },
-  "4m": { label: "4 meses", days: 124, dayWidth: 25 },
-  "5m": { label: "5 meses", days: 155, dayWidth: 22 },
-  "6m": { label: "6 meses", days: 186, dayWidth: 20 },
+  "1m": { label: "1 mes", months: 1, headerMode: "weeks" },
+  "2m": { label: "2 meses", months: 2, headerMode: "weeks" },
+  "3m": { label: "3 meses", months: 3, headerMode: "half-months" },
+  "6m": { label: "6 meses", months: 6, headerMode: "months" },
+  "1y": { label: "1 año", months: 12, headerMode: "bimesters" },
 } as const;
 
 const toneSwatchMap = Object.fromEntries(
@@ -162,3 +159,5 @@ export function getTaskTone(
     textClassName: isUpcoming ? "text-white/90" : "text-white",
   };
 }
+
+

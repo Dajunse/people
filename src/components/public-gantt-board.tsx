@@ -3,6 +3,7 @@
 import { TaskStatus } from "@prisma/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import {
   createCollaboratorFromGanttAction,
   createTaskFromGanttAction,
@@ -14,6 +15,7 @@ import {
   LABEL_WIDTH,
   LANE_HEIGHT,
   addDays,
+  addMonths,
   assignLanes,
   diffInDays,
   getBarSwatch,
@@ -65,6 +67,23 @@ type DragState = {
   targetAssigneeId: string;
 };
 
+function getCompanyHeaderTone(company: string | null | undefined) {
+  const normalized = company?.trim() ?? "";
+  if (!normalized) {
+    return {
+      leftStyle: { backgroundColor: "hsl(216 16% 84%)" },
+      rightStyle: { backgroundColor: "hsl(216 14% 88%)" },
+      textClassName: "text-slate-700",
+    };
+  }
+
+  return {
+    leftStyle: { backgroundColor: "hsl(210 78% 90%)" },
+    rightStyle: { backgroundColor: "hsl(210 74% 94%)" },
+    textClassName: "text-slate-700",
+  };
+}
+
 function parseTaskSchedule(task: GanttTask, override?: TaskOverride) {
   return getTaskSchedule({
     createdAt: new Date(task.createdAt),
@@ -86,7 +105,44 @@ const NO_COMPANY_KEY = "__NO_COMPANY__";
 const COLLABORATOR_FILTERS_STORAGE_KEY = "people_gantt_filters_collaborators";
 const CLIENT_FILTERS_STORAGE_KEY = "people_gantt_filters_clients";
 const COMPANY_FILTERS_STORAGE_KEY = "people_gantt_filters_companies";
+const KEYBOARD_SHORTCUTS_STORAGE_KEY = "people_gantt_keyboard_shortcuts_enabled";
 const DRAG_ACTIVATION_PX = 4;
+const ZOOM_SEQUENCE = ["1m", "2m", "3m", "6m", "1y"] as const;
+
+function toDateParam(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateParam(value: string | null | undefined) {
+  if (!value) return null;
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number.parseInt(yearText ?? "", 10);
+  const month = Number.parseInt(monthText ?? "", 10);
+  const day = Number.parseInt(dayText ?? "", 10);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  return startOfDay(new Date(year, month - 1, day));
+}
+
+function shiftAnchorByZoom(anchorDate: Date, zoom: (typeof ZOOM_SEQUENCE)[number], direction: -1 | 1) {
+  if (zoom === "1m") {
+    return addDays(anchorDate, 7 * direction);
+  }
+  if (zoom === "2m") {
+    return addDays(anchorDate, 14 * direction);
+  }
+  if (zoom === "3m") {
+    return addDays(anchorDate, 21 * direction);
+  }
+  if (zoom === "6m") {
+    return addMonths(anchorDate, direction);
+  }
+  return addMonths(anchorDate, 2 * direction);
+}
 
 function toInputDate(date: Date) {
   const year = date.getFullYear();
@@ -133,13 +189,16 @@ function getDefaultTaskDates() {
   };
 }
 
+function clampDayIndex(value: number, maxDayIndex: number) {
+  return Math.max(0, Math.min(value, maxDayIndex));
+}
+
 export function PublicGanttBoard({
   collaborators,
   currentUserId,
   currentUserRole,
   selectedTaskId,
   zoomKey,
-  dayWidth,
   dayCount,
   rangeStartIso,
   rangeEndIso,
@@ -155,7 +214,6 @@ export function PublicGanttBoard({
   currentUserRole?: string;
   selectedTaskId: string;
   zoomKey: string;
-  dayWidth: number;
   dayCount: number;
   rangeStartIso: string;
   rangeEndIso: string;
@@ -199,14 +257,22 @@ export function PublicGanttBoard({
   const [selectedCollaboratorIds, setSelectedCollaboratorIds] = useState<string[]>(collaboratorIds);
   const [selectedClients, setSelectedClients] = useState<string[]>(validClientKeys);
   const [selectedCompanies, setSelectedCompanies] = useState<string[]>(validCompanyKeys);
+  const [keyboardShortcutsEnabled, setKeyboardShortcutsEnabled] = useState(false);
   const [isPending, startTransition] = useTransition();
   const boardRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const dragChangedTaskRef = useRef<string | null>(null);
   const hasAutoScrolledRef = useRef(false);
+  const cursorTrackRef = useRef<HTMLElement | null>(null);
   const today = useMemo(() => startOfDay(new Date()), []);
   const rangeStart = useMemo(() => new Date(rangeStartIso), [rangeStartIso]);
   const rangeEnd = useMemo(() => new Date(rangeEndIso), [rangeEndIso]);
+  const [effectiveTimelineWidth, setEffectiveTimelineWidth] = useState(timelineWidth);
+  const [isCursorDragging, setIsCursorDragging] = useState(false);
+  const [cursorDayIndex, setCursorDayIndex] = useState(() =>
+    clampDayIndex(diffInDays(new Date(rangeStartIso), startOfDay(new Date())), Math.max(dayCount - 1, 0)),
+  );
+  const effectiveDayWidth = effectiveTimelineWidth / dayCount;
 
   useEffect(() => {
     setIsCreateModalOpen(Boolean(initialCreateModalOpen));
@@ -221,24 +287,47 @@ export function PublicGanttBoard({
   }, [initialFiltersModalOpen]);
 
   useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(KEYBOARD_SHORTCUTS_STORAGE_KEY);
+      setKeyboardShortcutsEnabled(raw === "1");
+    } catch {
+      setKeyboardShortcutsEnabled(false);
+    }
+  }, []);
+
+  useEffect(() => {
     if (hasAutoScrolledRef.current) return;
 
     const scrollContainer = boardRef.current?.closest<HTMLElement>("[data-gantt-scroll-container]");
     if (!scrollContainer) return;
 
-    const clampedToday =
-      today.getTime() < rangeStart.getTime()
-        ? rangeStart
-        : today.getTime() > rangeEnd.getTime()
-          ? rangeEnd
-          : today;
-    const timelineLeft = LABEL_WIDTH + 16;
-    const todayOffset = diffInDays(rangeStart, clampedToday) * dayWidth + dayWidth / 2;
-    const preferredViewportPosition = scrollContainer.clientWidth * 0.42;
-
-    scrollContainer.scrollLeft = Math.max(0, timelineLeft + todayOffset - preferredViewportPosition);
+    scrollContainer.scrollLeft = 0;
     hasAutoScrolledRef.current = true;
-  }, [dayWidth, rangeEnd, rangeStart, today]);
+  }, []);
+
+  useEffect(() => {
+    const board = boardRef.current;
+    if (!board) return;
+
+    const updateTimelineWidth = () => {
+      const availableWidth = board.getBoundingClientRect().width - LABEL_WIDTH - 12;
+      setEffectiveTimelineWidth(Math.max(360, availableWidth));
+    };
+
+    updateTimelineWidth();
+    const observer = new ResizeObserver(updateTimelineWidth);
+    observer.observe(board);
+
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const todayOffset = diffInDays(rangeStart, today);
+    setCursorDayIndex((current) => {
+      const safeCurrent = Number.isFinite(current) ? current : todayOffset;
+      return clampDayIndex(safeCurrent, Math.max(dayCount - 1, 0));
+    });
+  }, [dayCount, rangeStart, today]);
 
   useEffect(() => {
     try {
@@ -287,6 +376,66 @@ export function PublicGanttBoard({
       setSelectedCompanies(validCompanyKeys);
     }
   }, [collaborators, collaboratorIds, validClientKeys, validCompanyKeys]);
+
+  useEffect(() => {
+    if (!keyboardShortcutsEnabled) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isCreateModalOpen || isCreateCollaboratorModalOpen || isFiltersModalOpen || Boolean(selectedTaskId)) return;
+
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName?.toLowerCase();
+      if (
+        target?.isContentEditable ||
+        tagName === "input" ||
+        tagName === "textarea" ||
+        tagName === "select" ||
+        tagName === "button"
+      ) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (!["a", "s", "w", "d"].includes(key)) return;
+
+      const params = new URLSearchParams(window.location.search);
+      const currentZoomRaw = params.get("zoom") ?? zoomKey;
+      const currentZoom = ZOOM_SEQUENCE.includes(currentZoomRaw as (typeof ZOOM_SEQUENCE)[number])
+        ? (currentZoomRaw as (typeof ZOOM_SEQUENCE)[number])
+        : "1m";
+      const currentAnchor = parseDateParam(params.get("anchor")) ?? startOfDay(new Date());
+
+      if (key === "w" || key === "s") {
+        const currentIndex = ZOOM_SEQUENCE.indexOf(currentZoom);
+        const nextIndex = key === "w" ? currentIndex - 1 : currentIndex + 1;
+        if (nextIndex < 0 || nextIndex >= ZOOM_SEQUENCE.length) return;
+        params.set("zoom", ZOOM_SEQUENCE[nextIndex]);
+        params.set("anchor", toDateParam(currentAnchor));
+        event.preventDefault();
+        router.push(`/public/gantt?${params.toString()}`, { scroll: false });
+        return;
+      }
+
+      const direction: -1 | 1 = key === "a" ? -1 : 1;
+      const nextAnchor = shiftAnchorByZoom(currentAnchor, currentZoom, direction);
+      params.set("zoom", currentZoom);
+      params.set("anchor", toDateParam(nextAnchor));
+      event.preventDefault();
+      router.push(`/public/gantt?${params.toString()}`, { scroll: false });
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    keyboardShortcutsEnabled,
+    isCreateModalOpen,
+    isCreateCollaboratorModalOpen,
+    isFiltersModalOpen,
+    selectedTaskId,
+    router,
+    zoomKey,
+  ]);
 
   const openTask = (taskId: string) => {
     if (dragChangedTaskRef.current === taskId) {
@@ -562,40 +711,137 @@ export function PublicGanttBoard({
     .filter((group) => group.collaborators.length > 0);
   const noCompanyCollaborators = visibleCollaborators.filter((collaborator) => !(collaborator.company?.trim()));
   const firstVisibleCollaboratorId = visibleCollaborators[0]?.id ?? null;
+  const cursorDate = addDays(rangeStart, cursorDayIndex);
+  const cursorDiffFromToday = diffInDays(today, cursorDate);
+  const cursorLabel =
+    cursorDiffFromToday === 0
+      ? "Cursor: hoy"
+      : cursorDiffFromToday > 0
+        ? `Cursor: +${cursorDiffFromToday} dias`
+        : `Cursor: ${cursorDiffFromToday} dias`;
+
+  const updateCursorFromClientX = (clientX: number) => {
+    const track = cursorTrackRef.current;
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    const pixelOffset = clientX - rect.left - effectiveDayWidth / 2;
+    const nextDayIndex = clampDayIndex(Math.round(pixelOffset / effectiveDayWidth), Math.max(dayCount - 1, 0));
+    setCursorDayIndex(nextDayIndex);
+  };
+
+  const handleCursorPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const trackNode = event.currentTarget.closest<HTMLElement>("[data-gantt-cursor-track]");
+    if (!trackNode) return;
+    cursorTrackRef.current = trackNode;
+    setIsCursorDragging(true);
+    updateCursorFromClientX(event.clientX);
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleCursorPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!isCursorDragging) return;
+    updateCursorFromClientX(event.clientX);
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handleCursorPointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!isCursorDragging) return;
+    setIsCursorDragging(false);
+    updateCursorFromClientX(event.clientX);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const handleCursorPointerCancel = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!isCursorDragging) return;
+    setIsCursorDragging(false);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const toolbarShortcutsSlot =
+    typeof document === "undefined" ? null : document.getElementById("gantt-toolbar-shortcuts");
+  const toolbarStatusSlot =
+    typeof document === "undefined" ? null : document.getElementById("gantt-toolbar-status");
+  const shortcutsControl = (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={keyboardShortcutsEnabled}
+      aria-label="Activar controles ASWD"
+      onClick={(event) => {
+        const checked = !keyboardShortcutsEnabled;
+        setKeyboardShortcutsEnabled(checked);
+        try {
+          window.localStorage.setItem(KEYBOARD_SHORTCUTS_STORAGE_KEY, checked ? "1" : "0");
+        } catch {
+          // ignore storage errors and keep runtime toggle
+        }
+        event.currentTarget.blur();
+      }}
+      className="inline-flex select-none items-center gap-2 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-600 transition hover:bg-slate-50"
+    >
+      <span>ASWD</span>
+      <span
+        className={cn(
+          "relative inline-flex h-4 w-7 rounded-full border transition",
+          keyboardShortcutsEnabled
+            ? "border-slate-700 bg-slate-900"
+            : "border-slate-300 bg-slate-200",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-white shadow-sm transition",
+            keyboardShortcutsEnabled ? "left-[14px]" : "left-[1px]",
+          )}
+        />
+      </span>
+    </button>
+  );
+  const toolbarStatus = dragMessage ? (
+    <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-slate-600">
+      {isPending ? (
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">Guardando cambios...</span>
+      ) : null}
+      <span
+        className={cn(
+          "rounded-full border px-3 py-1",
+          dragMessage.type === "success"
+            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+            : "border-rose-200 bg-rose-50 text-rose-700",
+        )}
+      >
+        {dragMessage.text}
+      </span>
+    </div>
+  ) : null;
 
   return (
-    <div ref={boardRef} className="space-y-3">
-      {dragMessage ? (
-        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-          {isPending ? (
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">Guardando cambios...</span>
-          ) : null}
-          <span
-            className={cn(
-              "rounded-full border px-3 py-1",
-              dragMessage.type === "success"
-                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                : "border-rose-200 bg-rose-50 text-rose-700",
-            )}
-          >
-            {dragMessage.text}
-          </span>
-        </div>
-      ) : null}
+    <div ref={boardRef} className="space-y-2">
+      {toolbarShortcutsSlot ? createPortal(shortcutsControl, toolbarShortcutsSlot) : null}
+      {toolbarStatusSlot && toolbarStatus ? createPortal(toolbarStatus, toolbarStatusSlot) : null}
       {visibleCollaborators.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-3 py-6 text-center text-xs text-slate-500">
           No hay resultados con los filtros seleccionados.
         </div>
       ) : null}
       {collaboratorGroups.map((group) => (
-        <section key={group.company} className="space-y-3">
-          <div
-            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-1.5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
-            style={{ width: `${LABEL_WIDTH}px` }}
-          >
-            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
-            <h3 className="text-base font-semibold text-slate-900">{group.label}</h3>
+        <section key={group.company} className="space-y-2">
+          {(() => {
+            const headerTone = getCompanyHeaderTone(group.label);
+            return (
+          <div className="flex items-stretch gap-2">
+            <div
+              className="sticky left-0 z-20 flex h-8 shrink-0 items-center rounded-md px-3"
+              style={{ width: `${LABEL_WIDTH}px`, ...headerTone.leftStyle }}
+            >
+              <h3 className={cn("text-[11px] font-medium uppercase tracking-[0.14em]", headerTone.textClassName)}>{group.label}</h3>
+            </div>
+            <div className="h-8 min-w-0 flex-1 rounded-md" style={headerTone.rightStyle} />
           </div>
+            );
+          })()}
           {group.collaborators.map((collaborator) => {
         const barSwatch = getBarSwatch(collaborator.dashboardTone);
         const canOpenModal = currentUserId
@@ -613,57 +859,47 @@ export function PublicGanttBoard({
         const rowHeight = laneCount * LANE_HEIGHT;
 
         return (
-          <article key={collaborator.id} className="flex items-stretch gap-3">
+          <article key={collaborator.id} className="flex items-stretch gap-2">
             <div
               className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[22px] border border-slate-200 bg-white px-3 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
               style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
             >
               <div className="flex items-center gap-2.5">
-                <span className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-gradient-to-br text-xl shadow-sm ${collaborator.avatarSwatch}`}>
+                <span className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-gradient-to-br text-xl shadow-sm ${barSwatch}`}>
                   {collaborator.avatarEmoji}
                 </span>
-                <div>
-                  <p className="text-lg font-semibold text-slate-900">{collaborator.name}</p>
-                  <p className="text-xs text-slate-500">{collaborator.company ?? "Sin empresa"}</p>
-                </div>
+                <p className="text-lg font-semibold text-slate-900">{collaborator.name}</p>
               </div>
             </div>
 
             <div
               data-gantt-collaborator-id={collaborator.id}
+              data-gantt-cursor-track={collaborator.id === firstVisibleCollaboratorId ? "1" : undefined}
               className={cn(
-                "relative shrink-0 overflow-visible rounded-[22px] border border-slate-200 bg-slate-50",
+                "relative min-w-0 flex-1 overflow-visible rounded-[22px] border border-slate-200 bg-slate-50",
                 activeDragId && hoverAssigneeId === collaborator.id ? "ring-2 ring-slate-300/80 ring-offset-2" : "",
               )}
-              style={{ width: `${timelineWidth}px`, height: `${rowHeight}px` }}
+              style={{ height: `${rowHeight}px` }}
             >
               <div
-                className="grid h-full"
-                style={{
-                  gridTemplateColumns: `repeat(${dayCount}, ${dayWidth}px)`,
-                  gridTemplateRows: `repeat(${laneCount}, ${LANE_HEIGHT}px)`,
-                }}
+                className="pointer-events-none absolute inset-0 z-0 grid"
+                style={{ gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` }}
               >
-                {Array.from({ length: laneCount }).map((_, laneIndex) =>
-                  Array.from({ length: dayCount }).map((__, dayIndex) => {
-                    const day = addDays(rangeStart, dayIndex);
-                    return (
-                      <div
-                        key={`${collaborator.id}-${laneIndex}-${day.toISOString()}`}
-                        className={cn(
-                          "border-l border-t border-slate-200 first:border-l-0",
-                          isWeekend(day) ? "bg-slate-100/60" : "bg-white/55",
-                        )}
-                      />
-                    );
-                  }),
-                )}
+                {Array.from({ length: dayCount }).map((_, dayIndex) => {
+                  const day = addDays(rangeStart, dayIndex);
+                  return (
+                    <div
+                      key={`${collaborator.id}-bg-${day.toISOString()}`}
+                      className={isWeekend(day) ? "bg-slate-100/55" : "bg-white/65"}
+                    />
+                  );
+                })}
               </div>
 
               {today.getTime() >= rangeStart.getTime() && today.getTime() <= rangeEnd.getTime() ? (
                 <div
                   className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-rose-300/90"
-                  style={{ left: `${diffInDays(rangeStart, today) * dayWidth + dayWidth / 2}px` }}
+                  style={{ left: `${diffInDays(rangeStart, today) * effectiveDayWidth + effectiveDayWidth / 2}px` }}
                 >
                   {collaborator.id === firstVisibleCollaboratorId ? (
                     <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-rose-700">
@@ -671,6 +907,28 @@ export function PublicGanttBoard({
                     </span>
                   ) : null}
                 </div>
+              ) : null}
+
+              <div
+                className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-sky-400/90"
+                style={{ left: `${cursorDayIndex * effectiveDayWidth + effectiveDayWidth / 2}px` }}
+              />
+              {collaborator.id === firstVisibleCollaboratorId ? (
+                <button
+                  type="button"
+                  aria-label="Mover cursor de fecha"
+                  className={cn(
+                    "absolute -top-3 z-20 -translate-x-1/2 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-sky-700 transition",
+                    isCursorDragging ? "cursor-grabbing shadow-sm" : "cursor-ew-resize hover:bg-sky-100",
+                  )}
+                  style={{ left: `${cursorDayIndex * effectiveDayWidth + effectiveDayWidth / 2}px` }}
+                  onPointerDown={handleCursorPointerDown}
+                  onPointerMove={handleCursorPointerMove}
+                  onPointerUp={handleCursorPointerUp}
+                  onPointerCancel={handleCursorPointerCancel}
+                >
+                  {cursorLabel}
+                </button>
               ) : null}
 
               {scheduledTasks.length > 0 ? (
@@ -683,14 +941,14 @@ export function PublicGanttBoard({
                   const visibleEnd = schedule.end.getTime() > rangeEnd.getTime() ? rangeEnd : schedule.end;
                   const visibleStartOffset = diffInDays(rangeStart, visibleStart);
                   const visibleEndOffset = diffInDays(rangeStart, visibleEnd);
-                  const left = visibleStartOffset * dayWidth + 8;
-                  const width = Math.max((visibleEndOffset - visibleStartOffset + 1) * dayWidth - 14, 32);
+                  const left = visibleStartOffset * effectiveDayWidth + 8;
+                  const width = Math.max((visibleEndOffset - visibleStartOffset + 1) * effectiveDayWidth - 14, 32);
                   const top = laneIndex * LANE_HEIGHT + (LANE_HEIGHT - BAR_HEIGHT) / 2;
                   const tone = getTaskTone(task, schedule, today);
                   const clientTone = getClientTone(task.client);
                   const isEditableTask = Boolean(canOpenModal);
                   const isDragging = activeDragId === task.id;
-                  const sharedClassName = `group absolute rounded-[16px] border bg-gradient-to-r px-2.5 py-2 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
+                  const sharedClassName = `group absolute rounded-[16px] border bg-gradient-to-r px-2.5 py-1 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
                   const sharedStyle = {
                     left: `${left}px`,
                     top: `${top}px`,
@@ -698,10 +956,10 @@ export function PublicGanttBoard({
                     minHeight: `${BAR_HEIGHT}px`,
                   };
                   const barContent = (
-                    <div className="min-w-0 pr-8">
-                        <div className="flex items-center gap-2">
-                          <p className={`truncate text-sm font-semibold ${tone.textClassName}`}>{task.title}</p>
-                          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] ${clientTone}`}>
+                    <div className="w-full min-w-0">
+                        <div className="flex w-full items-center gap-2">
+                          <p className={`min-w-0 flex-1 truncate text-sm font-semibold ${tone.textClassName}`}>{task.title}</p>
+                          <span className={`ml-auto shrink-0 rounded-full border px-2 py-0.5 text-[10px] ${clientTone}`}>
                             {taskClientLabel(task.client)}
                           </span>
                         </div>
@@ -774,7 +1032,7 @@ export function PublicGanttBoard({
                       dragChangedTaskRef.current = task.id;
                     }
 
-                    const nextDayDelta = Math.round(pixelDelta / dayWidth);
+                    const nextDayDelta = Math.round(pixelDelta / effectiveDayWidth);
                     if (nextDayDelta === drag.dayDelta) return;
 
                     drag.dayDelta = nextDayDelta;
@@ -892,14 +1150,21 @@ export function PublicGanttBoard({
         </section>
       ))}
       {noCompanyCollaborators.length > 0 ? (
-        <section className="space-y-3">
-          <div
-            className="sticky left-0 z-20 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-1.5 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
-            style={{ width: `${LABEL_WIDTH}px` }}
-          >
-            <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Empresa</p>
-            <h3 className="text-base font-semibold text-slate-900">Sin empresa</h3>
+        <section className="space-y-2">
+          {(() => {
+            const headerTone = getCompanyHeaderTone(null);
+            return (
+          <div className="flex items-stretch gap-2">
+            <div
+              className="sticky left-0 z-20 flex h-8 shrink-0 items-center rounded-md px-3"
+              style={{ width: `${LABEL_WIDTH}px`, ...headerTone.leftStyle }}
+            >
+              <h3 className={cn("text-[11px] font-medium uppercase tracking-[0.14em]", headerTone.textClassName)}>Sin empresa</h3>
+            </div>
+            <div className="h-8 min-w-0 flex-1 rounded-md" style={headerTone.rightStyle} />
           </div>
+            );
+          })()}
           {noCompanyCollaborators.map((collaborator) => {
             const barSwatch = getBarSwatch(collaborator.dashboardTone);
             const canOpenModal = currentUserId
@@ -917,57 +1182,47 @@ export function PublicGanttBoard({
             const rowHeight = laneCount * LANE_HEIGHT;
 
             return (
-              <article key={collaborator.id} className="flex items-stretch gap-3">
+              <article key={collaborator.id} className="flex items-stretch gap-2">
                 <div
                   className="sticky left-0 z-20 flex shrink-0 items-center justify-start rounded-[22px] border border-slate-200 bg-white px-3 shadow-[12px_0_24px_-24px_rgba(15,23,42,0.55)]"
                   style={{ width: `${LABEL_WIDTH}px`, minHeight: `${rowHeight}px` }}
                 >
                   <div className="flex items-center gap-2.5">
-                    <span className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-gradient-to-br text-xl shadow-sm ${collaborator.avatarSwatch}`}>
+                    <span className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-gradient-to-br text-xl shadow-sm ${barSwatch}`}>
                       {collaborator.avatarEmoji}
                     </span>
-                    <div>
-                      <p className="text-lg font-semibold text-slate-900">{collaborator.name}</p>
-                      <p className="text-xs text-slate-500">Sin empresa</p>
-                    </div>
+                    <p className="text-lg font-semibold text-slate-900">{collaborator.name}</p>
                   </div>
                 </div>
 
                 <div
                   data-gantt-collaborator-id={collaborator.id}
+                  data-gantt-cursor-track={collaborator.id === firstVisibleCollaboratorId ? "1" : undefined}
                   className={cn(
-                    "relative shrink-0 overflow-visible rounded-[22px] border border-slate-200 bg-slate-50",
+                    "relative min-w-0 flex-1 overflow-visible rounded-[22px] border border-slate-200 bg-slate-50",
                     activeDragId && hoverAssigneeId === collaborator.id ? "ring-2 ring-slate-300/80 ring-offset-2" : "",
                   )}
-                  style={{ width: `${timelineWidth}px`, height: `${rowHeight}px` }}
+                  style={{ height: `${rowHeight}px` }}
                 >
                   <div
-                    className="grid h-full"
-                    style={{
-                      gridTemplateColumns: `repeat(${dayCount}, ${dayWidth}px)`,
-                      gridTemplateRows: `repeat(${laneCount}, ${LANE_HEIGHT}px)`,
-                    }}
+                    className="pointer-events-none absolute inset-0 z-0 grid"
+                    style={{ gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` }}
                   >
-                    {Array.from({ length: laneCount }).map((_, laneIndex) =>
-                      Array.from({ length: dayCount }).map((__, dayIndex) => {
-                        const day = addDays(rangeStart, dayIndex);
-                        return (
-                          <div
-                            key={`${collaborator.id}-${laneIndex}-${day.toISOString()}`}
-                            className={cn(
-                              "border-l border-t border-slate-200 first:border-l-0",
-                              isWeekend(day) ? "bg-slate-100/60" : "bg-white/55",
-                            )}
-                          />
-                        );
-                      }),
-                    )}
+                    {Array.from({ length: dayCount }).map((_, dayIndex) => {
+                      const day = addDays(rangeStart, dayIndex);
+                      return (
+                        <div
+                          key={`${collaborator.id}-bg-${day.toISOString()}`}
+                          className={isWeekend(day) ? "bg-slate-100/55" : "bg-white/65"}
+                        />
+                      );
+                    })}
                   </div>
 
                   {today.getTime() >= rangeStart.getTime() && today.getTime() <= rangeEnd.getTime() ? (
                     <div
                       className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-rose-300/90"
-                      style={{ left: `${diffInDays(rangeStart, today) * dayWidth + dayWidth / 2}px` }}
+                      style={{ left: `${diffInDays(rangeStart, today) * effectiveDayWidth + effectiveDayWidth / 2}px` }}
                     >
                       {collaborator.id === firstVisibleCollaboratorId ? (
                         <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-rose-700">
@@ -975,6 +1230,28 @@ export function PublicGanttBoard({
                         </span>
                       ) : null}
                     </div>
+                  ) : null}
+
+                  <div
+                    className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-sky-400/90"
+                    style={{ left: `${cursorDayIndex * effectiveDayWidth + effectiveDayWidth / 2}px` }}
+                  />
+                  {collaborator.id === firstVisibleCollaboratorId ? (
+                    <button
+                      type="button"
+                      aria-label="Mover cursor de fecha"
+                      className={cn(
+                        "absolute -top-3 z-20 -translate-x-1/2 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-sky-700 transition",
+                        isCursorDragging ? "cursor-grabbing shadow-sm" : "cursor-ew-resize hover:bg-sky-100",
+                      )}
+                      style={{ left: `${cursorDayIndex * effectiveDayWidth + effectiveDayWidth / 2}px` }}
+                      onPointerDown={handleCursorPointerDown}
+                      onPointerMove={handleCursorPointerMove}
+                      onPointerUp={handleCursorPointerUp}
+                      onPointerCancel={handleCursorPointerCancel}
+                    >
+                      {cursorLabel}
+                    </button>
                   ) : null}
 
                   {scheduledTasks.length > 0 ? (
@@ -987,8 +1264,8 @@ export function PublicGanttBoard({
                       const visibleEnd = schedule.end.getTime() > rangeEnd.getTime() ? rangeEnd : schedule.end;
                       const visibleStartOffset = diffInDays(rangeStart, visibleStart);
                       const visibleEndOffset = diffInDays(rangeStart, visibleEnd);
-                      const left = visibleStartOffset * dayWidth + 8;
-                      const width = Math.max((visibleEndOffset - visibleStartOffset + 1) * dayWidth - 14, 32);
+                      const left = visibleStartOffset * effectiveDayWidth + 8;
+                      const width = Math.max((visibleEndOffset - visibleStartOffset + 1) * effectiveDayWidth - 14, 32);
                       const top = laneIndex * LANE_HEIGHT + (LANE_HEIGHT - BAR_HEIGHT) / 2;
                       const statusLabel = statusLabelFor(task.status);
                       const tone = getTaskTone(task, schedule, today);
@@ -996,7 +1273,7 @@ export function PublicGanttBoard({
                       const isEditableTask = Boolean(canOpenModal);
                       const isDragging = activeDragId === task.id;
 
-                      const sharedClassName = `group absolute flex h-[34px] items-center overflow-hidden rounded-[16px] border bg-gradient-to-r px-2.5 py-1 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
+                      const sharedClassName = `group absolute flex h-[30px] items-center overflow-hidden rounded-[16px] border bg-gradient-to-r px-2.5 py-1 shadow-[0_12px_30px_-16px_rgba(15,23,42,0.85)] transition hover:z-20 hover:shadow-[0_24px_45px_-20px_rgba(15,23,42,0.45)] ${barSwatch} ${tone.barClassName} ${selectedTaskId === task.id ? "ring-2 ring-slate-950/20" : ""} ${isDragging ? "z-30 shadow-[0_28px_55px_-22px_rgba(15,23,42,0.55)]" : ""}`;
                       const sharedStyle = {
                         left: `${left}px`,
                         top: `${top}px`,
@@ -1007,14 +1284,14 @@ export function PublicGanttBoard({
                       const barContent = (
                         <>
                           <span className={cn("mr-2 inline-flex h-2.5 w-2.5 shrink-0 rounded-full", barSwatch)} />
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <p className={`truncate text-sm font-semibold ${tone.textClassName}`}>{task.title}</p>
                             <p className="truncate text-[11px] text-white/82">
                               {statusLabel}
                               {task.client ? ` · ${taskClientLabel(task.client)}` : ""}
                             </p>
                           </div>
-                          <span className={cn("ml-2 inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium", clientTone)}>
+                          <span className={cn("ml-auto inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium", clientTone)}>
                             {taskClientLabel(task.client)}
                           </span>
                         </>
@@ -1052,7 +1329,7 @@ export function PublicGanttBoard({
                           dragChangedTaskRef.current = task.id;
                         }
 
-                        const nextDayDelta = Math.round(pixelDelta / dayWidth);
+                        const nextDayDelta = Math.round(pixelDelta / effectiveDayWidth);
                         if (nextDayDelta === drag.dayDelta) return;
 
                         drag.dayDelta = nextDayDelta;
@@ -1544,4 +1821,7 @@ export function PublicGanttBoard({
     </div>
   );
 }
+
+
+
 

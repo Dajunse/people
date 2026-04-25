@@ -6,13 +6,13 @@ import { getAvatarPreset } from "@/lib/avatar-presets";
 import { getCurrentUser } from "@/lib/auth";
 import {
   LABEL_WIDTH,
+  TIMELINE_WIDTH,
   ZOOM_OPTIONS,
   addDays,
   addMonths,
   diffInDays,
   firstValue,
   getIsoWeekInfo,
-  getTaskSchedule,
   isWeekend,
   rangeLabel,
   startOfDay,
@@ -24,15 +24,160 @@ import { TASK_CLIENT_VALUES } from "@/lib/task-clients";
 
 export const dynamic = "force-dynamic";
 
-const ZOOM_SEQUENCE = ["1w", "2w", "3w", "1m", "2m", "3m", "4m", "5m", "6m"] as const;
+const ZOOM_SEQUENCE = ["1m", "2m", "3m", "6m", "1y"] as const;
 const STAFF_ROLES: Role[] = [Role.COLLABORATOR, Role.MANAGER];
-const PLANNED_RANGE_MONTH_PADDING = 3;
+
+type TimelineGroup = {
+  key: string;
+  label: string;
+  span: number;
+};
+
+function toDateParam(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateParam(value: string | null | undefined) {
+  if (!value) return null;
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number.parseInt(yearText ?? "", 10);
+  const month = Number.parseInt(monthText ?? "", 10);
+  const day = Number.parseInt(dayText ?? "", 10);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  return startOfDay(new Date(year, month - 1, day));
+}
+
+function shiftAnchorByZoom(anchorDate: Date, zoomKey: keyof typeof ZOOM_OPTIONS, direction: -1 | 1) {
+  if (zoomKey === "1m") {
+    return addDays(anchorDate, 7 * direction);
+  }
+  if (zoomKey === "2m") {
+    return addDays(anchorDate, 14 * direction);
+  }
+  if (zoomKey === "3m") {
+    return addDays(anchorDate, 21 * direction);
+  }
+  if (zoomKey === "6m") {
+    return addMonths(anchorDate, direction);
+  }
+  return addMonths(anchorDate, 2 * direction);
+}
+
+function monthLabel(date: Date) {
+  return new Intl.DateTimeFormat("es-MX", {
+    month: "short",
+    year: "2-digit",
+  }).format(date);
+}
+
+function buildMonthGroups(days: Date[]) {
+  const groups: TimelineGroup[] = [];
+
+  for (const day of days) {
+    const month = day.getMonth();
+    const year = day.getFullYear();
+    const key = `${year}-${month}`;
+    const label = monthLabel(day);
+
+    const currentGroup = groups.at(-1);
+    if (currentGroup && currentGroup.key === key) {
+      currentGroup.span += 1;
+      continue;
+    }
+
+    groups.push({ key, label, span: 1 });
+  }
+
+  return groups;
+}
+
+function buildWeekHeaderGroups(days: Date[], zoomKey: keyof typeof ZOOM_OPTIONS) {
+  const isShortRange = zoomKey === "1m";
+  if (isShortRange) {
+    const weekGroups: TimelineGroup[] = [];
+
+    for (const day of days) {
+      const isoWeek = getIsoWeekInfo(day);
+      const key = `${isoWeek.year}-w${isoWeek.week}`;
+      const label = `Sem ${isoWeek.week}`;
+      const current = weekGroups.at(-1);
+
+      if (current && current.key === key) {
+        current.span += 1;
+        continue;
+      }
+
+      weekGroups.push({ key, label, span: 1 });
+    }
+
+    return weekGroups;
+  }
+
+  const monthGroups = buildMonthGroups(days);
+  let startIndex = 0;
+  return monthGroups.map((group) => {
+    const endIndex = startIndex + group.span - 1;
+    const startWeek = getIsoWeekInfo(days[startIndex]).week;
+    const endWeek = getIsoWeekInfo(days[endIndex]).week;
+    const label = startWeek === endWeek ? `Sem ${startWeek}` : `Sem ${startWeek}-${endWeek}`;
+    startIndex += group.span;
+
+    return {
+      key: `week-range-${group.key}`,
+      label,
+      span: group.span,
+    };
+  });
+}
+
+function getRangeByZoom(zoomKey: keyof typeof ZOOM_OPTIONS, today: Date) {
+  if (zoomKey === "1m") {
+    return {
+      rangeStart: addDays(today, -7),
+      rangeEnd: addDays(today, 21),
+    };
+  }
+
+  if (zoomKey === "2m") {
+    return {
+      rangeStart: addDays(today, -14),
+      rangeEnd: addDays(today, 42),
+    };
+  }
+
+  if (zoomKey === "3m") {
+    const rangeStart = addDays(today, -21);
+    return {
+      rangeStart,
+      rangeEnd: addDays(addMonths(rangeStart, 3), -1),
+    };
+  }
+
+  if (zoomKey === "6m") {
+    const rangeStart = addDays(today, -42);
+    return {
+      rangeStart,
+      rangeEnd: addDays(addMonths(rangeStart, 6), -1),
+    };
+  }
+
+  return {
+    rangeStart: addMonths(today, -4),
+    rangeEnd: addDays(addMonths(today, 8), -1),
+  };
+}
 
 export default async function PublicGanttPage({
   searchParams,
 }: {
   searchParams: Promise<{
     zoom?: string | string[];
+    anchor?: string | string[];
     taskId?: string | string[];
     create?: string | string[];
     createCollaborator?: string | string[];
@@ -40,23 +185,34 @@ export default async function PublicGanttPage({
   }>;
 }) {
   const resolvedSearchParams = await searchParams;
-  const requestedZoom = firstValue(resolvedSearchParams.zoom) ?? "3w";
+  const requestedZoom = firstValue(resolvedSearchParams.zoom) ?? "1m";
+  const requestedAnchor = firstValue(resolvedSearchParams.anchor) ?? "";
   const selectedTaskId = firstValue(resolvedSearchParams.taskId) ?? "";
   const createTaskModal = firstValue(resolvedSearchParams.create) === "1";
   const createCollaboratorModal = firstValue(resolvedSearchParams.createCollaborator) === "1";
   const filtersModal = firstValue(resolvedSearchParams.filters) === "1";
-  const zoomKey = requestedZoom in ZOOM_OPTIONS ? (requestedZoom as keyof typeof ZOOM_OPTIONS) : "3w";
+  const zoomKey = requestedZoom in ZOOM_OPTIONS ? (requestedZoom as keyof typeof ZOOM_OPTIONS) : "1m";
   const zoom = ZOOM_OPTIONS[zoomKey];
   const zoomIndex = ZOOM_SEQUENCE.indexOf(zoomKey);
   const zoomInKey = zoomIndex > 0 ? ZOOM_SEQUENCE[zoomIndex - 1] : null;
   const zoomOutKey = zoomIndex < ZOOM_SEQUENCE.length - 1 ? ZOOM_SEQUENCE[zoomIndex + 1] : null;
 
+  const today = startOfDay(new Date());
+  const parsedAnchorDate = parseDateParam(requestedAnchor);
+  const anchorDate = parsedAnchorDate ?? today;
+  const previousAnchor = shiftAnchorByZoom(anchorDate, zoomKey, -1);
+  const nextAnchor = shiftAnchorByZoom(anchorDate, zoomKey, 1);
+
   const buildGanttHref = (
     nextZoom: keyof typeof ZOOM_OPTIONS,
-    options?: { create?: boolean; createCollaborator?: boolean; filters?: boolean },
+    options?: { create?: boolean; createCollaborator?: boolean; filters?: boolean; anchorDate?: Date | null },
   ) => {
     const params = new URLSearchParams();
     params.set("zoom", nextZoom);
+    const anchorForParams = options?.anchorDate ?? anchorDate;
+    if (anchorForParams) {
+      params.set("anchor", toDateParam(anchorForParams));
+    }
     if (selectedTaskId) {
       params.set("taskId", selectedTaskId);
     }
@@ -177,55 +333,14 @@ export default async function PublicGanttPage({
   const selectedTaskManageableByManager =
     isManager && viewerCompany && selectedTask?.assignee.company === viewerCompany;
 
-  const scheduledEntries = collaborators.flatMap((collaborator) =>
-    collaborator.assignedTasks
-      .map((task) => {
-        const schedule = getTaskSchedule(task);
-        if (!schedule) {
-          return null;
-        }
-        return { schedule };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)),
-  );
-
-  const today = startOfDay(new Date());
-  const plannedStart = scheduledEntries.length
-    ? scheduledEntries.reduce(
-        (min, entry) => (entry.schedule.start.getTime() < min.getTime() ? entry.schedule.start : min),
-        scheduledEntries[0].schedule.start,
-      )
-    : today;
-  const plannedEnd = scheduledEntries.length
-    ? scheduledEntries.reduce(
-        (max, entry) => (entry.schedule.end.getTime() > max.getTime() ? entry.schedule.end : max),
-        scheduledEntries[0].schedule.end,
-      )
-    : today;
-  const rangeStart = addMonths(plannedStart, -PLANNED_RANGE_MONTH_PADDING);
-  const rangeEnd = addMonths(plannedEnd, PLANNED_RANGE_MONTH_PADDING);
+  const { rangeStart, rangeEnd } = getRangeByZoom(zoomKey, anchorDate);
 
   const dayCount = Math.max(diffInDays(rangeStart, rangeEnd) + 1, 1);
   const days = Array.from({ length: dayCount }, (_, index) => addDays(rangeStart, index));
-  const timelineWidth = dayCount * zoom.dayWidth;
-  const weekGroups: Array<{ key: string; label: string; span: number }> = [];
-
-  for (const day of days) {
-    const info = getIsoWeekInfo(day);
-    const key = `${info.year}-${info.week}`;
-    const currentGroup = weekGroups.at(-1);
-
-    if (currentGroup && currentGroup.key === key) {
-      currentGroup.span += 1;
-      continue;
-    }
-
-    weekGroups.push({
-      key,
-      label: `Semana ${info.week}`,
-      span: 1,
-    });
-  }
+  const timelineWidth = TIMELINE_WIDTH;
+  const weekHeaderGroups = buildWeekHeaderGroups(days, zoomKey);
+  const monthGroups = buildMonthGroups(days);
+  const showDailyLabels = zoomKey === "1m";
 
   const boardCollaborators = collaborators.map((collaborator) => {
     const avatar = getAvatarPreset(collaborator.avatarPreset);
@@ -261,14 +376,13 @@ export default async function PublicGanttPage({
       <div className="mx-auto w-full max-w-[1900px] space-y-3">
         <header className="rounded-[24px] border border-slate-200 bg-white px-5 py-4 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.28)]">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Linea de tiempo del equipo</h1>
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-sky-600">People Gantt Publico</p>
+              <h1 className="mt-1 bg-gradient-to-r from-slate-950 via-slate-900 to-sky-700 bg-clip-text text-[clamp(1.8rem,2.5vw,2.6rem)] font-semibold tracking-[-0.02em] text-transparent">
+                Linea de tiempo del equipo
+              </h1>
+            </div>
             <div className="flex flex-wrap gap-2">
-              <Link
-                href="/public"
-                className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs text-slate-700 transition hover:bg-slate-200"
-              >
-                Portal publico
-              </Link>
               <Link
                 href="/login"
                 className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition hover:bg-slate-100"
@@ -309,15 +423,33 @@ export default async function PublicGanttPage({
                   -
                 </span>
               )}
+              <Link
+                href={buildGanttHref(zoomKey, { anchorDate: previousAnchor })}
+                aria-label="Mover vista al periodo anterior"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-base text-slate-700 transition hover:bg-slate-100"
+              >
+                {"<"}
+              </Link>
+              <Link
+                href={buildGanttHref(zoomKey, { anchorDate: nextAnchor })}
+                aria-label="Mover vista al periodo siguiente"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-base text-slate-700 transition hover:bg-slate-100"
+              >
+                {">"}
+              </Link>
               <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600">
                 {zoom.label}
               </span>
+              <div id="gantt-toolbar-shortcuts" className="ml-1" />
             </div>
             <div className="flex items-center justify-center gap-2 md:col-start-2">
               <Link
                 href={buildGanttHref(zoomKey, { filters: true })}
-                className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
               >
+                <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current text-slate-500">
+                  <path d="M3.5 4a1 1 0 0 1 .8-.4h11.4a1 1 0 0 1 .77 1.64L12 10.62V15a1 1 0 0 1-.45.83l-2.5 1.67A1 1 0 0 1 7.5 16.67v-6.05L3.73 5.24A1 1 0 0 1 3.5 4Z" />
+                </svg>
                 Filtros
               </Link>
               {canCreateTasks ? (
@@ -325,46 +457,57 @@ export default async function PublicGanttPage({
                   {currentUser?.role === "ADMIN" ? (
                     <Link
                       href={buildGanttHref(zoomKey, { createCollaborator: true })}
-                      className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
                     >
+                      <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 stroke-current text-slate-500">
+                        <circle cx="8" cy="7" r="3" fill="none" strokeWidth="1.6" />
+                        <path d="M3.5 16c0-2.2 2-4 4.5-4s4.5 1.8 4.5 4" fill="none" strokeWidth="1.6" strokeLinecap="round" />
+                        <path d="M14 6h3m-1.5-1.5v3" fill="none" strokeWidth="1.6" strokeLinecap="round" />
+                      </svg>
                       Nuevo colaborador
                     </Link>
                   ) : null}
                   <Link
                     href={buildGanttHref(zoomKey, { create: true })}
-                    className="rounded-full border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800"
                   >
+                    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 stroke-current text-white/90">
+                      <rect x="3.5" y="4.5" width="13" height="11" rx="2" fill="none" strokeWidth="1.5" />
+                      <path d="M10 7v6M7 10h6" fill="none" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
                     Nueva tarea
                   </Link>
                 </>
               ) : null}
             </div>
-            <div className="hidden md:block" />
+            <div className="flex min-h-7 items-center justify-end md:col-start-3">
+              <div id="gantt-toolbar-status" />
+            </div>
           </div>
         </section>
 
         <section
           data-gantt-scroll-container
-          className="overflow-x-auto rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]"
+          className="overflow-x-hidden rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.24)]"
         >
-          <div style={{ minWidth: `${timelineWidth + LABEL_WIDTH + 24}px` }}>
+          <div>
             <div className="mb-3 flex items-end gap-3 border-b border-slate-200 pb-3">
               <div
                 className="sticky left-0 z-30 shrink-0 bg-white"
                 style={{ width: `${LABEL_WIDTH}px` }}
               />
-              <div className="shrink-0" style={{ width: `${timelineWidth}px` }}>
+              <div className="min-w-0 flex-1">
                 <div
                   className="grid border-b border-slate-200 pb-2"
-                  style={{ gridTemplateColumns: `repeat(${dayCount}, ${zoom.dayWidth}px)` }}
+                  style={{ gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` }}
                 >
-                  {weekGroups.map((group) => (
+                  {weekHeaderGroups.map((group) => (
                     <div
                       key={group.key}
-                      className="flex items-center justify-center border-l border-slate-200 px-2 first:border-l-0"
+                      className="flex h-2 items-center justify-center border-l border-slate-200 px-2 first:border-l-0"
                       style={{ gridColumn: `span ${group.span} / span ${group.span}` }}
                     >
-                      <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+                      <span className="whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[8px] font-medium uppercase leading-none tracking-[0.16em] text-slate-500">
                         {group.label}
                       </span>
                     </div>
@@ -372,20 +515,32 @@ export default async function PublicGanttPage({
                 </div>
                 <div
                   className="grid shrink-0 gap-0 pt-2"
-                  style={{ gridTemplateColumns: `repeat(${dayCount}, ${zoom.dayWidth}px)` }}
+                  style={{ gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` }}
                 >
-                  {days.map((day) => (
-                    <div
-                      key={day.toISOString()}
-                      className={cn(
-                        "border-l border-slate-200 px-1 text-center first:border-l-0",
-                        isWeekend(day) ? "bg-slate-50/80" : "",
-                      )}
-                    >
-                      <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">{weekdayLabel(day)}</p>
-                      <p className="mt-1 text-xs font-medium text-slate-700">{rangeLabel(day)}</p>
-                    </div>
-                  ))}
+                  {showDailyLabels
+                    ? days.map((day) => (
+                        <div
+                          key={day.toISOString()}
+                          className={cn(
+                            "flex h-4 flex-col items-center justify-center border-l border-slate-200 px-1 text-center first:border-l-0",
+                            isWeekend(day) ? "bg-slate-50/80" : "",
+                          )}
+                        >
+                          <p className="whitespace-nowrap text-[8px] uppercase leading-none tracking-[0.14em] text-slate-400">{weekdayLabel(day)}</p>
+                          <p className="mt-0.5 whitespace-nowrap text-[10px] font-medium leading-none text-slate-700">{rangeLabel(day)}</p>
+                        </div>
+                      ))
+                    : monthGroups.map((group) => (
+                        <div
+                          key={`month-${group.key}`}
+                          className="flex h-4 items-center justify-center border-l border-slate-200 px-2 first:border-l-0"
+                          style={{ gridColumn: `span ${group.span} / span ${group.span}` }}
+                        >
+                          <span className="whitespace-nowrap text-[9px] font-medium uppercase leading-none tracking-[0.14em] text-slate-500">
+                            {group.label}
+                          </span>
+                        </div>
+                      ))}
                 </div>
               </div>
             </div>
@@ -397,7 +552,6 @@ export default async function PublicGanttPage({
               currentUserRole={currentUser?.role}
               selectedTaskId={selectedTaskId}
               zoomKey={zoomKey}
-              dayWidth={zoom.dayWidth}
               dayCount={dayCount}
               rangeStartIso={rangeStart.toISOString()}
               rangeEndIso={rangeEnd.toISOString()}
@@ -421,7 +575,7 @@ export default async function PublicGanttPage({
       {currentUser && selectedTask && selectedTaskAllowed && (currentUser.role === "ADMIN" || selectedTask.assigneeId === currentUser.id || selectedTaskManageableByManager) ? (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/28 px-4 py-8 backdrop-blur-[3px]">
           <Link
-            href={`/public/gantt?zoom=${zoomKey}`}
+            href={buildGanttHref(zoomKey)}
             aria-label="Cerrar editor"
             className="absolute inset-0"
           />
